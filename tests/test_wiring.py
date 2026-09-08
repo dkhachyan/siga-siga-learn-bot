@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import pkgutil
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
-from siga.bot.factory import create_dispatcher
+from aiogram import Dispatcher
+
 from siga.db.base import Base
 
 FORBIDDEN_IN_CORE = ("aiogram", "anthropic", "sqlalchemy")
 
 
-def test_dispatcher_builds_and_listens_to_messages() -> None:
-    dp = create_dispatcher(cast(Any, None))  # фабрика сессий тут не дёргается
-    assert "message" in dp.resolve_used_update_types()
+def test_dispatcher_builds_and_listens_to_messages(dispatcher: Dispatcher) -> None:
+    used = dispatcher.resolve_used_update_types()
+    assert "message" in used
+    assert "callback_query" in used, "без этого кнопки экрана подтверждения мертвы"
 
 
 def test_users_table_is_registered() -> None:

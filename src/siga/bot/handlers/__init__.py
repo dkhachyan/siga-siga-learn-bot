@@ -2,7 +2,7 @@
 
 from aiogram import Router
 
-from siga.bot.handlers import common, start
+from siga.bot.handlers import common, imports, start
 
 
 def build_router() -> Router:
@@ -13,6 +13,7 @@ def build_router() -> Router:
     """
     router = Router(name="root")
     router.include_router(start.router)
+    router.include_router(imports.router)
     router.include_router(common.router)
     return router
 

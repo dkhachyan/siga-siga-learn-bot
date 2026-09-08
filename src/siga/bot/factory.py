@@ -14,6 +14,8 @@ from siga.config import Settings
 
 BOT_COMMANDS = [
     BotCommand(command="start", description="Начало"),
+    BotCommand(command="add", description="Загрузить пачку слов"),
+    BotCommand(command="pack", description="Показать текущую пачку"),
     BotCommand(command="help", description="Что умеет бот"),
 ]
 
@@ -26,6 +28,13 @@ def create_bot(settings: Settings) -> Bot:
 
 
 def create_dispatcher(session_factory: async_sessionmaker[AsyncSession]) -> Dispatcher:
+    """Собрать диспетчер. В процессе вызывается один раз.
+
+    Роутеры хендлеров — объекты уровня модуля (обычный приём aiogram), а один
+    роутер нельзя подключить к двум родителям. Боту это не мешает: диспетчер
+    у процесса один. Тестам приходится делить общий — см. фикстуру
+    `dispatcher` в `tests/conftest.py`.
+    """
     dp = Dispatcher()
 
     db_session = DbSessionMiddleware(session_factory)

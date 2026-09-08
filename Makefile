@@ -1,4 +1,8 @@
-.PHONY: install fmt lint typecheck test check db up down logs migrate revision
+.PHONY: install fmt lint typecheck test test-db check db up down logs migrate revision
+
+# Отдельная база под тесты: фикстура `session` сносит схему целиком,
+# и делать это в рабочей базе нельзя.
+TEST_DATABASE_URL ?= postgresql+asyncpg://siga:siga@localhost:5432/siga_test
 
 install:  ## поставить зависимости в .venv
 	uv sync
@@ -14,8 +18,14 @@ lint:
 typecheck:
 	uv run mypy
 
-test:
+test:  ## быстрые тесты; те, что просят базу, пропускаются
 	uv run pytest
+
+test-db:  ## все тесты, включая те, которым нужен Postgres (сначала make db)
+	docker compose exec -T db psql -U siga -d siga -tAc \
+		"SELECT 1 FROM pg_database WHERE datname='siga_test'" | grep -q 1 || \
+		docker compose exec -T db createdb -U siga siga_test
+	TEST_DATABASE_URL=$(TEST_DATABASE_URL) uv run pytest
 
 check: lint typecheck test
 

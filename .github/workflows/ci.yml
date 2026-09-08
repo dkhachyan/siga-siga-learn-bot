@@ -46,6 +46,10 @@ jobs:
           --health-retries 12
     env:
       DATABASE_URL: postgresql+asyncpg://siga:siga@localhost:5432/siga
+      # Отдельная база: фикстура `session` сносит схему целиком, и делать это
+      # в той же базе, где только что проверялись миграции, — плохая идея.
+      TEST_DATABASE_URL: postgresql+asyncpg://siga:siga@localhost:5432/siga_test
+      PGPASSWORD: siga
     steps:
       - uses: actions/checkout@v4
 
@@ -64,3 +68,8 @@ jobs:
       - name: Модели совпадают с миграциями
         run: |
           uv run alembic check
+
+      - name: Тесты, которым нужна база
+        run: |
+          psql -h localhost -U siga -d siga -c 'CREATE DATABASE siga_test'
+          uv run pytest
