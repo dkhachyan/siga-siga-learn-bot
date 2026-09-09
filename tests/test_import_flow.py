@@ -7,12 +7,17 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
+
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from siga.core.enums import PackStatus
 from siga.db.models import Pack, Word, WordProgress
+from siga.llm.base import LlmClient
+from tests.fake_llm import ScriptedClient
 from tests.fake_telegram import FakeTelegram
 
 THREE_WORDS = "το νερό — вода\nο καφές — кофе\nτο γάλα — молоко"
@@ -204,3 +209,86 @@ async def test_photo_gets_an_honest_answer(
 
     assert answers, "бот не должен молча проглатывать фотографию"
     assert await _packs(db) == []
+
+
+# --- обогащение при подтверждении --------------------------------------------
+
+
+ENRICHED_THREE = json.dumps(
+    {
+        "words": [
+            {
+                "lemma": "το νερό",
+                "lemma_accented": "το νερό",
+                "translation_ru": "вода",
+                "pos": "noun",
+                "article": "το",
+                "gender": "n",
+                "examples": [{"el": "Θέλω νερό.", "ru": "Хочу воды."}],
+            },
+            {
+                "lemma": "ο καφές",
+                "lemma_accented": "ο καφές",
+                "translation_ru": "кофе",
+                "pos": "noun",
+                "article": "ο",
+                "gender": "m",
+                "examples": [],
+            },
+            {
+                "lemma": "το γάλα",
+                "lemma_accented": "το γάλα",
+                "translation_ru": "молоко",
+                "pos": "noun",
+                "article": "το",
+                "gender": "n",
+                "examples": [],
+            },
+        ]
+    },
+    ensure_ascii=False,
+)
+
+
+async def test_confirm_enriches_the_words(
+    telegram: FakeTelegram,
+    db: async_sessionmaker[AsyncSession],
+    use_llm: Callable[[LlmClient], None],
+) -> None:
+    use_llm(ScriptedClient(ENRICHED_THREE))
+
+    await telegram.send("/add")
+    await telegram.send(THREE_WORDS)
+    await telegram.press("✅")
+
+    words = await _words(db)
+    assert [word.article for word in words] == ["το", "ο", "το"]
+    assert [word.gender for word in words] == ["n", "m", "n"]
+    assert all(word.enriched_at is not None for word in words)
+
+
+async def test_confirm_activates_the_pack_even_without_the_llm(
+    telegram: FakeTelegram, db: async_sessionmaker[AsyncSession]
+) -> None:
+    """Модель лежит — слова человека всё равно сохранены (фикстура даёт offline)."""
+    await telegram.send("/add")
+    await telegram.send(THREE_WORDS)
+    answers = await telegram.press("✅")
+
+    assert any("LLM_PROVIDER" in answer for answer in answers), "причину называем честно"
+    packs_ = await _packs(db)
+    assert packs_[0].status == PackStatus.ACTIVE
+    assert all(word.enriched_at is None for word in await _words(db))
+
+
+async def test_confirm_names_the_words_the_model_skipped(
+    telegram: FakeTelegram, use_llm: Callable[[LlmClient], None]
+) -> None:
+    use_llm(ScriptedClient(json.dumps({"words": []})))
+
+    await telegram.send("/add")
+    await telegram.send(THREE_WORDS)
+    answers = await telegram.press("✅")
+
+    report = next(answer for answer in answers if "без грамматики" in answer)
+    assert "το νερό" in report

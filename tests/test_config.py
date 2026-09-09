@@ -65,3 +65,33 @@ def test_token_is_not_leaked_by_repr() -> None:
 def test_malformed_token_is_rejected(bad: str) -> None:
     with pytest.raises(ValidationError, match="BotFather"):
         Settings(_env_file=None, bot_token=bad)  # type: ignore[arg-type]
+
+
+# --- LLM ---------------------------------------------------------------------
+
+
+def test_llm_is_off_until_asked() -> None:
+    """Без ключа бот поднимается: импорт слов от модели не зависит."""
+    assert Settings(**MINIMAL).llm_provider == "offline"  # type: ignore[arg-type]
+
+
+def test_deepseek_without_a_key_fails_at_startup() -> None:
+    """Лучше не подняться, чем сказать «не получилось» посреди импорта."""
+    with pytest.raises(ValidationError, match="DEEPSEEK_API_KEY"):
+        Settings(**MINIMAL, llm_provider="deepseek")  # type: ignore[arg-type]
+
+
+def test_llm_key_is_not_leaked_by_repr() -> None:
+    settings = Settings(**MINIMAL, llm_provider="deepseek", deepseek_api_key="sk-secret")  # type: ignore[arg-type]
+    assert "sk-secret" not in repr(settings)
+
+
+def test_vision_route_gets_the_only_model_that_takes_images() -> None:
+    from siga.llm.base import Route
+    from siga.llm.factory import route_models
+
+    models = route_models(Settings(**MINIMAL))  # type: ignore[arg-type]
+
+    assert set(models) == set(Route), "маршрут без модели — падение клиента на старте"
+    assert models[Route.VISION_IMPORT] == "deepseek-v4-flash-vision-exp"
+    assert models[Route.ENRICH] == "deepseek-v4-flash"

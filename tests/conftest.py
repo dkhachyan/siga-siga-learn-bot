@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from typing import cast
 
 import pytest
@@ -24,6 +24,8 @@ from sqlalchemy.ext.asyncio import (
 
 from siga.bot.factory import create_dispatcher
 from siga.db.base import Base
+from siga.llm.base import LlmClient
+from siga.llm.offline import OfflineClient
 from tests.fake_telegram import FakeTelegram
 
 SKIP_REASON = "нужна база: TEST_DATABASE_URL=postgresql+asyncpg://…"
@@ -95,8 +97,31 @@ def dispatcher(_sessions: _CurrentEngineSessions) -> Dispatcher:
 
     `create_dispatcher` в процессе можно позвать ровно один раз (см. её
     docstring), поэтому тесты делят диспетчер и чистят за собой FSM.
+
+    LLM — заглушка: сценарии этапа 1 до неё не доходят, а если дойдут, тест
+    упадёт с внятным `LlmUnavailable`, а не сходит в сеть за деньги.
     """
-    return create_dispatcher(cast("async_sessionmaker[AsyncSession]", _sessions))
+    return create_dispatcher(
+        cast("async_sessionmaker[AsyncSession]", _sessions),
+        OfflineClient(),
+    )
+
+
+@pytest.fixture
+def use_llm(dispatcher: Dispatcher) -> Iterator[Callable[[LlmClient], None]]:
+    """Подменить LLM на время одного теста.
+
+    Диспетчер общий на прогон, а клиент едет в его workflow-данных — так что
+    подмена делается там же и откатывается после теста, иначе сценарий с
+    заготовленными ответами утёк бы в соседние.
+    """
+    original = dispatcher["llm"]
+
+    def install(client: LlmClient) -> None:
+        dispatcher["llm"] = client
+
+    yield install
+    dispatcher["llm"] = original
 
 
 @pytest_asyncio.fixture

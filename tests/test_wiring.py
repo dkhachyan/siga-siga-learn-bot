@@ -10,7 +10,9 @@ from aiogram import Dispatcher
 
 from siga.db.base import Base
 
-FORBIDDEN_IN_CORE = ("aiogram", "anthropic", "sqlalchemy")
+#: §9: `core` — чистый домен. Клиент LLM тут тоже вне закона: правила зачёта
+#: и SRS должны считаться без сети, иначе их не покрыть тестами.
+FORBIDDEN_IN_CORE = ("aiogram", "aiohttp", "sqlalchemy", "siga.llm")
 
 
 def test_dispatcher_builds_and_listens_to_messages(dispatcher: Dispatcher) -> None:

@@ -1,4 +1,4 @@
-"""Вёрстка экрана подтверждения."""
+"""Вёрстка экрана подтверждения, списка активной пачки и карточек."""
 
 from __future__ import annotations
 
@@ -8,10 +8,13 @@ import pytest
 
 from siga.bot.render import (
     MESSAGE_LIMIT,
+    Card,
     WordLine,
+    active_pack_screen,
     pack_screen,
     pack_title,
     plural_ru,
+    word_card,
     word_line,
     words_form,
 )
@@ -98,3 +101,103 @@ def test_pack_screen_splits_a_long_list_across_messages() -> None:
 def test_pack_screen_survives_an_empty_pack() -> None:
     screen = pack_screen("Пустая", [])
     assert screen == ["<b>Пустая</b> — 0 слов\n"]
+
+
+# --- список активной пачки ----------------------------------------------------
+
+
+def test_active_pack_screen_shows_how_long_is_left() -> None:
+    screen = active_pack_screen("Пачка", [WordLine("το νερό", "вода")], days_left=9)
+    assert "1. <b>το νερό</b> — вода" in screen[-1]
+    assert "9 дней" in screen[-1]
+
+
+def test_active_pack_screen_says_the_period_is_over() -> None:
+    screen = active_pack_screen("Пачка", [WordLine("το νερό", "вода")], days_left=0)
+    assert "закончился" in screen[-1].lower()
+
+
+def test_active_pack_screen_omits_the_deadline_when_there_is_none() -> None:
+    screen = active_pack_screen("Пачка", [WordLine("το νερό", "вода")], days_left=None)
+    assert "период" not in screen[-1].lower()
+
+
+# --- карточка слова -----------------------------------------------------------
+
+
+NOUN = Card(
+    lemma="το νερό",
+    translation="вода",
+    pos="noun",
+    article="το",
+    gender="n",
+    examples=({"el": "Θέλω νερό.", "ru": "Хочу воды."},),
+    enriched=True,
+)
+
+
+def test_word_card_shows_the_word_grammar_and_example() -> None:
+    card = word_card(NOUN, position=1, total=12, title="Пачка от 8 сентября")
+
+    assert "<b>το νερό</b>" in card
+    assert "вода" in card
+    assert "существительное, средний род" in card
+    assert "Θέλω νερό." in card
+    assert "Хочу воды." in card
+
+
+def test_word_card_says_where_in_the_pack_it_is() -> None:
+    """Счётчик в тексте, а не мёртвой кнопкой: листать иначе некуда."""
+    assert "3 из 12" in word_card(NOUN, position=3, total=12, title="Пачка")
+
+
+def test_word_card_does_not_double_the_article() -> None:
+    """Артикль обычно уже в лемме — «το το νερό» быть не должно."""
+    assert word_card(NOUN, position=1, total=1, title="Пачка").count("το νερό") >= 1
+    assert "το το νερό" not in word_card(NOUN, position=1, total=1, title="Пачка")
+
+
+def test_word_card_adds_a_missing_article() -> None:
+    card = Card(lemma="νερό", translation="вода", pos="noun", article="το", enriched=True)
+    assert "<b>το νερό</b>" in word_card(card, position=1, total=1, title="Пачка")
+
+
+def test_word_card_shows_a_verb_form_only_when_it_differs() -> None:
+    same = Card(lemma="πίνω", translation="пить", pos="verb", verb_form="πίνω", enriched=True)
+    other = Card(lemma="μιλώ", translation="говорить", pos="verb", verb_form="μιλάω", enriched=True)
+
+    assert "1 л. ед. ч." not in word_card(same, position=1, total=1, title="Пачка")
+    assert "1 л. ед. ч. — μιλάω" in word_card(other, position=1, total=1, title="Пачка")
+
+
+def test_word_card_shows_the_dictionary_translation_beside_a_human_one() -> None:
+    """FR-IMP-4: свой перевод остаётся, словарный показывается рядом."""
+    card = Card(lemma="το νερό", translation="вода", translation_model="водичка", enriched=True)
+    text = word_card(card, position=1, total=1, title="Пачка")
+
+    assert "вода" in text
+    assert "водичка" in text
+
+
+def test_word_card_hides_a_dictionary_translation_that_is_the_same() -> None:
+    card = Card(lemma="το νερό", translation="вода", translation_model="вода", enriched=True)
+    assert word_card(card, position=1, total=1, title="Пачка").count("вода") == 1
+
+
+def test_word_card_admits_a_word_without_grammar() -> None:
+    """Обогащение могло не дойти — карточка всё равно показывает слово."""
+    card = Card(lemma="ευχαριστώ", translation="спасибо")
+    text = word_card(card, position=1, total=1, title="Пачка")
+
+    assert "ευχαριστώ" in text
+    assert "спасибо" in text
+    assert "ещё не собрал" in text
+
+
+def test_word_card_stays_silent_about_grammar_it_has_no_words_for() -> None:
+    """`other` — предлоги и частицы: писать «часть речи: other» незачем."""
+    card = Card(lemma="και", translation="и", pos="other", enriched=True)
+    text = word_card(card, position=1, total=1, title="Пачка")
+
+    assert "other" not in text
+    assert "ещё не собрал" not in text

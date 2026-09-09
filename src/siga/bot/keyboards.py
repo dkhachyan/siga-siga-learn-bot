@@ -30,6 +30,50 @@ class WordAction(CallbackData, prefix="word"):
     word_id: int
 
 
+class CardAction(CallbackData, prefix="card"):
+    """Листание карточек. `index` — номер слова с нуля в порядке пачки.
+
+    Номер, а не `word_id`: кнопка «дальше» должна знать, куда идти, а не что
+    показать, и при удалении слова из пачки список просто сдвигается — вместо
+    кнопки, ведущей в никуда.
+    """
+
+    action: Literal["open", "show", "list"]
+    """`open` — первая карточка новым сообщением, `show` — листание на месте.
+
+    Разделены нарочно: список пачки может не влезть в одно сообщение, и тогда
+    «вернуться к списку» — это несколько новых сообщений, а не правка одного.
+    Листать же удобно на месте, не заваливая переписку.
+    """
+
+    index: int = 0
+
+
+def active_pack_screen() -> InlineKeyboardMarkup:
+    """Кнопки под списком активной пачки. Правки тут нет: пачка уже в работе."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🃏 Карточки", callback_data=CardAction(action="open", index=0))
+    return builder.as_markup()
+
+
+def card_nav(index: int, total: int) -> InlineKeyboardMarkup:
+    """Стрелки листания и возврат к списку.
+
+    Листание кольцевое: с последней карточки «дальше» ведёт на первую. Так
+    не нужна отдельная неактивная кнопка на краях — а тупиковая стрелка,
+    которая просто ничего не делает, читается как поломка.
+    """
+    builder = InlineKeyboardBuilder()
+    if total > 1:
+        builder.button(text="←", callback_data=CardAction(action="show", index=(index - 1) % total))
+        builder.button(text="→", callback_data=CardAction(action="show", index=(index + 1) % total))
+        builder.adjust(2)
+    builder.row(
+        InlineKeyboardButton(text="☰ Списком", callback_data=CardAction(action="list").pack())
+    )
+    return builder.as_markup()
+
+
 def pack_screen() -> InlineKeyboardMarkup:
     """Обязательный набор кнопок экрана подтверждения, FR-IMP-8."""
     builder = InlineKeyboardBuilder()

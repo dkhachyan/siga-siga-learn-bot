@@ -165,6 +165,20 @@ class FakeTelegram:
         return None
 
     @property
+    def edits(self) -> list[str]:
+        """Тексты правок сообщений.
+
+        Карточки листаются `edit_text` — новым сообщением на каждое нажатие
+        переписка превратилась бы в свалку. В ответах `send`/`click` таких
+        вызовов не видно, поэтому для них отдельный список.
+        """
+        return [
+            call.text
+            for call in self.session.calls
+            if type(call).__name__ == "EditMessageText" and isinstance(call.text, str)
+        ]
+
+    @property
     def keyboards(self) -> list[InlineKeyboardMarkup]:
         return [
             call.reply_markup

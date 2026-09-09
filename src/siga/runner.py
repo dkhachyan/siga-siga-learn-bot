@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from siga.bot import create_bot, create_dispatcher, set_bot_commands
 from siga.config import Settings, get_settings
 from siga.db import create_engine, create_session_factory
+from siga.llm.factory import create_llm_client
 from siga.logging import setup_logging
 
 log = logging.getLogger(__name__)
@@ -89,8 +90,10 @@ async def run(settings: Settings) -> None:
     engine = create_engine(settings.database_url, echo=settings.env == "local")
     session_factory = create_session_factory(engine)
 
+    llm = create_llm_client(settings)
+
     bot = create_bot(settings)
-    dp = create_dispatcher(session_factory)
+    dp = create_dispatcher(session_factory, llm)
 
     try:
         if settings.bot_mode == "webhook":
@@ -99,6 +102,7 @@ async def run(settings: Settings) -> None:
             await _run_polling(bot, dp)
     finally:
         await bot.session.close()
+        await llm.close()
         await engine.dispose()
 
 

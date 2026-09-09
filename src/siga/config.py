@@ -38,6 +38,21 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://siga:siga@localhost:5432/siga"
 
+    # --- LLM ---
+    # По умолчанию выключена: без ключа бот должен подниматься и работать в
+    # той части, где LLM не нужна, а не падать на старте.
+    llm_provider: Literal["offline", "deepseek"] = "offline"
+    deepseek_api_key: SecretStr | None = None
+    #: Без `/v1` — так в документации DeepSeek и во всех их примерах.
+    deepseek_base_url: str = "https://api.deepseek.com"
+    llm_model_text: str = "deepseek-v4-flash"
+    #: Единственная модель DeepSeek, принимающая картинки (R1, разбор фото).
+    llm_model_vision: str = "deepseek-v4-flash-vision-exp"
+    #: Щедро: ответ на 20 слов идёт секунд двадцать, а обрыв по таймауту стоит
+    #: дороже ожидания — партию придётся спрашивать заново, снова за деньги.
+    llm_timeout_s: float = 120.0
+    llm_max_retries: int = 3
+
     @field_validator("bot_token")
     @classmethod
     def _check_token_shape(cls, value: SecretStr) -> SecretStr:
@@ -68,6 +83,17 @@ class Settings(BaseSettings):
             raise ValueError("WEBHOOK_BASE_URL должен быть https — Telegram не примет http")
         if not self.webhook_path.startswith("/"):
             raise ValueError("WEBHOOK_PATH должен начинаться со слэша")
+        return self
+
+    @model_validator(mode="after")
+    def _check_llm_config(self) -> Settings:
+        # Падаем на старте, а не на первом обогащении: иначе человек узнает
+        # про забытый ключ из «не получилось» посреди сценария импорта.
+        if self.llm_provider == "deepseek" and not self.deepseek_api_key:
+            raise ValueError(
+                "LLM_PROVIDER=deepseek требует DEEPSEEK_API_KEY "
+                "(ключ создаётся на platform.deepseek.com → API keys)"
+            )
         return self
 
     @property

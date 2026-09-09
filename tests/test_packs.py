@@ -11,10 +11,11 @@ import datetime as dt
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from siga.core.enums import PackStatus, WordSource
+from siga.core.enums import Gender, PackStatus, PartOfSpeech, WordSource
 from siga.core.wordlist import parse_wordlist
 from siga.db import packs, users
 from siga.db.models import Import, Pack, Word, WordProgress
+from siga.llm.enrich import EnrichedWord, Example
 
 TEN_WORDS = """
 το νερό — вода
@@ -187,3 +188,107 @@ async def test_set_translation_replaces_only_the_translation(session: AsyncSessi
         await packs.set_translation(session, pack_id=pack.id, word_id=-1, translation_ru="что-то")
         is None
     )
+
+
+# --- обогащение --------------------------------------------------------------
+
+
+def _enriched(
+    lemma: str = "νερο",
+    *,
+    accented: str = "το νερό",
+    translation: str = "вода",
+    pos: str = "noun",
+    gender: str | None = "n",
+) -> EnrichedWord:
+    return EnrichedWord(
+        lemma=lemma,
+        lemma_accented=accented,
+        translation_ru=translation,
+        pos=PartOfSpeech(pos),
+        article="το" if pos == "noun" else None,
+        gender=Gender(gender) if gender else None,
+        examples=[Example(el="Θέλω νερό.", ru="Хочу воды.")],
+    )
+
+
+async def test_apply_enrichment_fills_grammar(session: AsyncSession) -> None:
+    user_id = await _user(session)
+    pack = await _draft(session, user_id)
+    now = dt.datetime(2026, 3, 1, tzinfo=dt.UTC)
+
+    updated = await packs.apply_enrichment(
+        session, pack_id=pack.id, enriched={"νερο": _enriched()}, now=now
+    )
+
+    assert updated == 1, "остальные девять слов модель не вернула"
+    word = (await packs.list_words(session, pack_id=pack.id))[0]
+    assert word.pos == PartOfSpeech.NOUN
+    assert word.gender == Gender.NEUTER
+    assert word.article == "το"
+    assert word.examples == [{"el": "Θέλω νερό.", "ru": "Хочу воды."}]
+    assert word.enriched_at == now
+
+
+async def test_apply_enrichment_leaves_untouched_words_unenriched(session: AsyncSession) -> None:
+    """Пустой `enriched_at` — метка «сюда ещё вернуться», а не поломка."""
+    user_id = await _user(session)
+    pack = await _draft(session, user_id)
+
+    await packs.apply_enrichment(
+        session,
+        pack_id=pack.id,
+        enriched={"νερο": _enriched()},
+        now=dt.datetime(2026, 3, 1, tzinfo=dt.UTC),
+    )
+
+    without = [w for w in await packs.list_words(session, pack_id=pack.id) if w.enriched_at is None]
+    assert len(without) == 9
+
+
+async def test_apply_enrichment_keeps_the_translation_a_human_gave(session: AsyncSession) -> None:
+    """FR-IMP-4: перевод человека — его дело. Модельный кладём рядом."""
+    user_id = await _user(session)
+    pack = await _draft(session, user_id)
+
+    await packs.apply_enrichment(
+        session,
+        pack_id=pack.id,
+        enriched={"νερο": _enriched(translation="водичка")},
+        now=dt.datetime(2026, 3, 1, tzinfo=dt.UTC),
+    )
+
+    word = (await packs.list_words(session, pack_id=pack.id))[0]
+    assert word.translation_ru == "вода", "как написал человек"
+    assert word.translation_model == "водичка"
+
+
+async def test_apply_enrichment_fills_a_translation_nobody_gave(session: AsyncSession) -> None:
+    user_id = await _user(session)
+    pack = await _draft(session, user_id, text="το νερό\nο καφές\nτο γάλα")
+
+    await packs.apply_enrichment(
+        session,
+        pack_id=pack.id,
+        enriched={"νερο": _enriched()},
+        now=dt.datetime(2026, 3, 1, tzinfo=dt.UTC),
+    )
+
+    word = (await packs.list_words(session, pack_id=pack.id))[0]
+    assert word.translation_ru == "вода"
+
+
+async def test_apply_enrichment_refuses_to_swap_the_word_itself(session: AsyncSession) -> None:
+    """Модель ответила про другое слово — показывать его человеку нельзя."""
+    user_id = await _user(session)
+    pack = await _draft(session, user_id)
+
+    await packs.apply_enrichment(
+        session,
+        pack_id=pack.id,
+        enriched={"νερο": _enriched(accented="το κρασί")},
+        now=dt.datetime(2026, 3, 1, tzinfo=dt.UTC),
+    )
+
+    word = (await packs.list_words(session, pack_id=pack.id))[0]
+    assert word.lemma_accented == "το νερό"

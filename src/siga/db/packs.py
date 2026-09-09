@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +18,7 @@ from siga.core.enums import PackStatus, WordSource
 from siga.core.greek import normalize_lemma
 from siga.core.wordlist import ParsedWord
 from siga.db.models import Import, Pack, Word, WordProgress
+from siga.llm.enrich import EnrichedWord
 
 
 async def find_known_lemmas(
@@ -50,6 +51,22 @@ async def get_draft(session: AsyncSession, *, user_id: int) -> Pack | None:
         select(Pack)
         .where(Pack.user_id == user_id, Pack.status == PackStatus.DRAFT)
         .order_by(Pack.created_at.desc())
+    )
+    return pack
+
+
+async def get_active(session: AsyncSession, *, user_id: int) -> Pack | None:
+    """Пачка, по которой сейчас идёт работа.
+
+    Берём самую свежую: спецификация говорит про активную пачку в единственном
+    числе (§5.8), но запрета «две сразу» в базе нет — и пока в `/add` нет
+    проверки, две активные завести можно. Отдавать при этом старую было бы
+    хуже всего: человек смотрел бы не на то, что только что загрузил.
+    """
+    pack: Pack | None = await session.scalar(
+        select(Pack)
+        .where(Pack.user_id == user_id, Pack.status == PackStatus.ACTIVE)
+        .order_by(Pack.started_at.desc().nullslast(), Pack.id.desc())
     )
     return pack
 
@@ -156,6 +173,47 @@ async def set_translation(
     word.translation_ru = translation_ru
     await session.commit()
     return word
+
+
+async def apply_enrichment(
+    session: AsyncSession,
+    *,
+    pack_id: int,
+    enriched: Mapping[str, EnrichedWord],
+    now: dt.datetime,
+) -> int:
+    """Разложить грамматику по словам пачки (FR-IMP-7). Сколько слов обновили.
+
+    Слова, про которые модель промолчала, остаются с пустым `enriched_at` —
+    по нему их потом можно догнать повторным вызовом, не трогая остальные.
+    """
+    updated = 0
+    for word in await list_words(session, pack_id=pack_id):
+        found = enriched.get(word.lemma)
+        if found is None:
+            continue
+
+        # Перевод человека не затираем (FR-IMP-4): он для него правильный,
+        # даже если словарь считает иначе. Модельный кладём рядом.
+        word.translation_model = found.translation_ru
+        if not word.translation_ru:
+            word.translation_ru = found.translation_ru
+
+        # Ударение и артикль ставим только если это то же самое слово: иначе
+        # модель, ответившая не тем, молча подменит человеку слово в карточке.
+        if found.lemma_accented and normalize_lemma(found.lemma_accented) == word.lemma:
+            word.lemma_accented = found.lemma_accented
+
+        word.pos = found.pos
+        word.article = found.article
+        word.gender = found.gender
+        word.verb_form = found.verb_form
+        word.examples = [example.model_dump() for example in found.examples]
+        word.enriched_at = now
+        updated += 1
+
+    await session.commit()
+    return updated
 
 
 async def activate(

@@ -21,7 +21,8 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from siga.bot import keyboards, render, texts
-from siga.core.enums import WordSource
+from siga.bot.handlers import cards
+from siga.core.enums import Level, WordSource
 from siga.core.wordlist import (
     MAX_PACK_WORDS,
     MIN_PACK_WORDS,
@@ -30,7 +31,9 @@ from siga.core.wordlist import (
     parse_wordlist,
 )
 from siga.db import packs, users
-from siga.db.models import DEFAULT_PERIOD_DAYS, Pack
+from siga.db.models import DEFAULT_PERIOD_DAYS, Pack, User
+from siga.llm.base import LlmClient, LlmError
+from siga.llm.enrich import enrich
 
 log = logging.getLogger(__name__)
 
@@ -53,9 +56,13 @@ class ImportFlow(StatesGroup):
     """Выбрали слово для правки, ждём новый перевод. В данных — `word_id`."""
 
 
-async def _current_user_id(session: AsyncSession, message_from_id: int) -> int:
+async def _current_user(session: AsyncSession, message_from_id: int) -> User:
     user, _ = await users.get_or_create(session, tg_user_id=message_from_id)
-    return user.id
+    return user
+
+
+async def _current_user_id(session: AsyncSession, message_from_id: int) -> int:
+    return (await _current_user(session, message_from_id)).id
 
 
 async def _show_pack(message: Message, session: AsyncSession, pack: Pack) -> None:
@@ -106,16 +113,27 @@ async def handle_cancel(message: Message, state: FSMContext) -> None:
 
 @router.message(Command("pack"))
 async def handle_pack(message: Message, session: AsyncSession, state: FSMContext) -> None:
-    """Показать текущий черновик — способ вернуться к брошенному импорту."""
+    """Показать текущую пачку: сначала черновик, потом активную.
+
+    Черновик вперёд не случайно: незаконченный импорт — это долг перед
+    человеком, и `/pack` должен возвращать к нему, а не показывать прошлую
+    пачку, будто список слов куда-то делся.
+    """
     if message.from_user is None:
         return
     user_id = await _current_user_id(session, message.from_user.id)
-    pack = await packs.get_draft(session, user_id=user_id)
-    if pack is None:
+
+    draft = await packs.get_draft(session, user_id=user_id)
+    if draft is not None:
+        await state.set_state(ImportFlow.confirming)
+        await _show_pack(message, session, draft)
+        return
+
+    active = await packs.get_active(session, user_id=user_id)
+    if active is None:
         await message.answer(texts.NO_PACK)
         return
-    await state.set_state(ImportFlow.confirming)
-    await _show_pack(message, session, pack)
+    await cards.show_pack(message, session, active)
 
 
 @router.message(ImportFlow.waiting_list, F.photo)
@@ -182,17 +200,17 @@ def _parse_report(duplicates: Sequence[ParsedWord], rejected: Sequence[RejectedL
 
 async def _draft_or_complain(
     callback: CallbackQuery, session: AsyncSession
-) -> tuple[Pack, Message] | None:
-    """Черновик и сообщение, на которое можно отвечать, — или отказ."""
+) -> tuple[Pack, Message, User] | None:
+    """Черновик, сообщение для ответа и хозяин черновика — или отказ."""
     if callback.from_user is None or not isinstance(callback.message, Message):
         await callback.answer()
         return None
-    user_id = await _current_user_id(session, callback.from_user.id)
-    pack = await packs.get_draft(session, user_id=user_id)
+    user = await _current_user(session, callback.from_user.id)
+    pack = await packs.get_draft(session, user_id=user.id)
     if pack is None:
         await callback.answer(texts.NO_DRAFT, show_alert=True)
         return None
-    return pack, callback.message
+    return pack, callback.message, user
 
 
 @router.callback_query(keyboards.PackAction.filter(F.action == "back"))
@@ -200,7 +218,7 @@ async def handle_back(callback: CallbackQuery, session: AsyncSession, state: FSM
     found = await _draft_or_complain(callback, session)
     if found is None:
         return
-    pack, message = found
+    pack, message, _ = found
     await state.set_state(ImportFlow.confirming)
     await callback.answer()
     await _show_pack(message, session, pack)
@@ -211,7 +229,7 @@ async def handle_delete_pick(callback: CallbackQuery, session: AsyncSession) -> 
     found = await _draft_or_complain(callback, session)
     if found is None:
         return
-    pack, message = found
+    pack, message, _ = found
     words = await packs.list_words(session, pack_id=pack.id)
     await callback.answer()
     await message.answer(
@@ -225,7 +243,7 @@ async def handle_edit_pick(callback: CallbackQuery, session: AsyncSession) -> No
     found = await _draft_or_complain(callback, session)
     if found is None:
         return
-    pack, message = found
+    pack, message, _ = found
     words = await packs.list_words(session, pack_id=pack.id)
     await callback.answer()
     await message.answer(
@@ -244,7 +262,7 @@ async def handle_delete_word(
     found = await _draft_or_complain(callback, session)
     if found is None:
         return
-    pack, message = found
+    pack, message, _ = found
     await packs.remove_word(session, pack_id=pack.id, word_id=callback_data.word_id)
     await state.set_state(ImportFlow.confirming)
     await callback.answer("Убрал")
@@ -261,7 +279,7 @@ async def handle_edit_word(
     found = await _draft_or_complain(callback, session)
     if found is None:
         return
-    pack, message = found
+    pack, message, _ = found
     words = {word.id: word for word in await packs.list_words(session, pack_id=pack.id)}
     word = words.get(callback_data.word_id)
     if word is None:
@@ -303,7 +321,7 @@ async def handle_add_pick(
     found = await _draft_or_complain(callback, session)
     if found is None:
         return
-    _, message = found
+    _, message, _ = found
     await state.set_state(ImportFlow.waiting_new_word)
     await callback.answer()
     await message.answer(texts.ADD_ONE_PROMPT)
@@ -340,18 +358,60 @@ async def handle_new_word(message: Message, session: AsyncSession, state: FSMCon
     await _show_pack(message, session, pack)
 
 
+async def _enrich_pack(
+    message: Message, session: AsyncSession, llm: LlmClient, pack: Pack, level: Level
+) -> None:
+    """Добрать грамматику для пачки и рассказать человеку, что вышло.
+
+    Пачка важнее грамматики: любая неудача модели тут заканчивается словами
+    «сохранил без артиклей», а не потерей списка, который человек набирал
+    руками. Слова без обогащения остаются с пустым `enriched_at`.
+    """
+    words = await packs.list_words(session, pack_id=pack.id)
+    await message.answer(texts.ENRICHING)
+
+    try:
+        result = await enrich(llm, lemmas=[word.lemma_accented for word in words], level=level)
+    except LlmError as error:
+        log.warning("R2: обогащение пачки %s не удалось (%s)", pack.id, error)
+        await message.answer(texts.ENRICH_FAILED.format(reason=error))
+        return
+
+    updated = await packs.apply_enrichment(
+        session, pack_id=pack.id, enriched=result.words, now=dt.datetime.now(dt.UTC)
+    )
+    log.info(
+        "R2: пачка=%s обогащено=%s без грамматики=%s токенов=%s",
+        pack.id,
+        updated,
+        len(result.missing),
+        result.usage.total_tokens,
+    )
+    if result.missing:
+        await message.answer(
+            texts.ENRICH_PARTIAL.format(count=len(result.missing), listed=", ".join(result.missing))
+        )
+
+
 @router.callback_query(keyboards.PackAction.filter(F.action == "confirm"))
-async def handle_confirm(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+async def handle_confirm(
+    callback: CallbackQuery, session: AsyncSession, state: FSMContext, llm: LlmClient
+) -> None:
     found = await _draft_or_complain(callback, session)
     if found is None:
         return
-    pack, message = found
+    pack, message, user = found
 
     words = await packs.list_words(session, pack_id=pack.id)
     if not words:
         await callback.answer()
         await message.answer(texts.PACK_EMPTY)
         return
+
+    # Кнопку отпускаем сразу: обогащение идёт до минуты, а Telegram ждёт
+    # ответа на callback секунды и потом рисует человеку ошибку.
+    await callback.answer()
+    await _enrich_pack(message, session, llm, pack, Level(user.level))
 
     await packs.activate(
         session,
@@ -362,13 +422,13 @@ async def handle_confirm(callback: CallbackQuery, session: AsyncSession, state: 
     await state.clear()
     log.info("пачка подтверждена id=%s слов=%s", pack.id, len(words))
 
-    await callback.answer()
     await message.answer(
         texts.CONFIRMED.format(
             title=pack.title,
             count=len(words),
             word_form=render.words_form(len(words)),
-        )
+        ),
+        reply_markup=keyboards.active_pack_screen(),
     )
 
 
