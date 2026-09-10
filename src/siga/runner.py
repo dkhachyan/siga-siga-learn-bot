@@ -71,9 +71,8 @@ async def _run_webhook(bot: Bot, dp: Dispatcher, settings: Settings) -> None:
 def _log_access(settings: Settings) -> None:
     """Сказать в журнал, кого бот пускает.
 
-    Открытый бот — это не только чужие в переписке, но и чужие траты по твоему
-    ключу LLM, поэтому предупреждение, а не `info`: такую строку видно в любом
-    хвосте журнала, и «я же закрывал» перестаёт быть догадкой.
+    Предупреждение, а не `info`: такую строку видно в любом хвосте журнала, и
+    «я же закрывал» перестаёт быть догадкой.
     """
     if settings.allowed_tg_user_ids:
         # Номерами, а не числом: «я же его добавлял» перестаёт быть догадкой.
@@ -84,7 +83,10 @@ def _log_access(settings: Settings) -> None:
             ", ".join(str(number) for number in sorted(settings.allowed_tg_user_ids)),
         )
     else:
-        log.warning("ALLOWED_TG_USER_IDS пуст — бот отвечает всем, кто напишет")
+        log.warning(
+            "ALLOWED_TG_USER_IDS пуст — бот не пустит никого, включая тебя. "
+            "Впиши свой номер Telegram в .env и перезапусти"
+        )
 
 
 async def run(settings: Settings) -> None:

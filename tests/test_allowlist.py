@@ -31,14 +31,18 @@ STRANGER_ID = 909
 class Doorman:
     """Мидлварь с подставным хендлером: пустил или нет и что ответил."""
 
-    def __init__(self, *allowed: int) -> None:
+    def __init__(self, *allowed: int, gated: bool = True) -> None:
+        """`gated=False` — гейта нет вовсе (`None`), как у диспетчера в тестах.
+
+        Отличать это от пустого списка обязательно: пустой список — закрыто.
+        """
         self.session = RecordingSession()
         self.bot = Bot(
             token=FAKE_TOKEN,
             session=self.session,
             default=DefaultBotProperties(parse_mode=ParseMode.HTML),
         )
-        self.guard = AllowlistMiddleware(frozenset(allowed))
+        self.guard = AllowlistMiddleware(frozenset(allowed) if gated else None)
         self.passed = False
 
     async def _handler(self, event: TelegramObject, data: dict[str, Any]) -> str:
@@ -127,13 +131,28 @@ async def test_the_owner_gets_through(doorman: Doorman) -> None:
     assert not doorman.replies, "своему не за что отказывать"
 
 
-async def test_an_empty_list_lets_everyone_in() -> None:
-    """Пустой список — «открыто»: локальный запуск не требует настройки."""
-    open_door = Doorman()
+async def test_an_empty_list_lets_nobody_in() -> None:
+    """Забытая настройка должна запирать, а не отпирать.
 
-    await open_door.feed(message_from(STRANGER_ID))
+    Наоборот было один день, и этого хватило: в проде `.env` завели из
+    `.env.example` с пустой строкой, бот поднялся открытым, предупреждение в
+    журнале никто не прочитал — и посторонний завёлся в `users`.
+    """
+    forgotten = Doorman()
 
-    assert open_door.passed
+    await forgotten.feed(message_from(STRANGER_ID))
+
+    assert not forgotten.passed
+    assert forgotten.replies, "и хозяину тоже надо сказать, что закрыто"
+
+
+async def test_without_a_gate_everyone_passes() -> None:
+    """`None` — гейта нет: так собирается диспетчер в тестах."""
+    no_gate = Doorman(gated=False)
+
+    await no_gate.feed(message_from(STRANGER_ID))
+
+    assert no_gate.passed
 
 
 # --- подключение --------------------------------------------------------------

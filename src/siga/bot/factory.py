@@ -40,7 +40,7 @@ def create_dispatcher(
     session_factory: async_sessionmaker[AsyncSession],
     llm: LlmClient,
     *,
-    allowed: frozenset[int] = frozenset(),
+    allowed: frozenset[int] | None = None,
 ) -> Dispatcher:
     """Собрать диспетчер. В процессе вызывается один раз.
 
@@ -53,8 +53,9 @@ def create_dispatcher(
     мидлвари: хендлеру достаточно объявить параметр `llm`. Сессия базы — иначе,
     она своя на каждый апдейт.
 
-    `allowed` пустой по умолчанию — бот отвечает всем. Это удобно локально и в
-    тестах, а прод про такое узнаёт предупреждением в журнале (см. `runner`).
+    `allowed=None` по умолчанию — гейта нет, проходят все: так диспетчер
+    собирают тесты, где Telegram поддельный. Прод всегда передаёт список, и
+    пустой список там значит «никого» — см. `AllowlistMiddleware`.
     """
     dp = Dispatcher(llm=llm)
 

@@ -70,8 +70,8 @@ def test_malformed_token_is_rejected(bad: str) -> None:
 # --- кого пускать -------------------------------------------------------------
 
 
-def test_the_bot_is_open_until_a_list_is_given() -> None:
-    """Пустой список — «отвечает всем»: про это предупреждает `runner`."""
+def test_a_forgotten_list_locks_the_bot_rather_than_opens_it() -> None:
+    """Пусто = «никого». Пустой набор доезжает до мидлвари и там запирает."""
     assert Settings(**MINIMAL).allowed_tg_user_ids == frozenset()  # type: ignore[arg-type]
 
 

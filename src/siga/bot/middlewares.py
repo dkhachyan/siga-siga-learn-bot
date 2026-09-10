@@ -50,12 +50,16 @@ class AllowlistMiddleware(BaseMiddleware):
     сессии базы посторонний доходить не должен вовсе, иначе запрет пришлось бы
     повторять в каждом новом хендлере — и однажды забыть.
 
-    Пустой список значит «открыт всем»: тесты и локальный запуск не должны
-    требовать настройки. Молчать об этом нельзя, поэтому предупреждает
-    `runner` на старте.
+    `None` — гейта нет вовсе, проходят все: так собирается диспетчер в тестах,
+    где Telegram поддельный и пускать некого. **Пустой список — это закрыто**,
+    а не открыто: сначала было наоборот, ради удобства локального запуска, и
+    ровно на этом бот в проде отработал открытым — `.env` там завели из
+    `.env.example`, где строка пустая, и предупреждение в журнале никто не
+    прочитал. Запертый снаружи хозяин исправляет это за минуту и сразу
+    замечает; открытый бот не замечает никто.
     """
 
-    def __init__(self, allowed: frozenset[int]) -> None:
+    def __init__(self, allowed: frozenset[int] | None) -> None:
         self._allowed = allowed
 
     async def __call__(
@@ -64,7 +68,7 @@ class AllowlistMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: dict[str, Any],
     ) -> Any:
-        if not self._allowed:
+        if self._allowed is None:
             return await handler(event, data)
 
         context: EventContext | None = data.get("event_context")
