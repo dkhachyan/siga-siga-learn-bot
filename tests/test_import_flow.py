@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from siga.core.enums import PackStatus
+from siga.core.enums import PackStatus, WordSource
 from siga.db.models import Pack, Word, WordProgress
 from siga.llm.base import LlmClient
 from tests.fake_llm import ScriptedClient
@@ -279,6 +279,120 @@ async def test_confirm_activates_the_pack_even_without_the_llm(
     packs_ = await _packs(db)
     assert packs_[0].status == PackStatus.ACTIVE
     assert all(word.enriched_at is None for word in await _words(db))
+
+
+async def test_add_with_an_active_pack_asks_before_replacing_it(
+    telegram: FakeTelegram, db: async_sessionmaker[AsyncSession]
+) -> None:
+    """§5.8: активная пачка одна. Молча заменять её на новую нельзя."""
+    await telegram.send("/add")
+    await telegram.send(THREE_WORDS)
+    await telegram.press("✅")
+
+    answers = await telegram.send("/add")
+    assert "Пачка от" in answers[-1]
+    assert telegram.find_button("📦") is not None
+    assert telegram.find_button("↩︎") is not None
+
+    # Импорт не начат: список слов сейчас — просто текст, а не новая пачка
+    await telegram.send("η θάλασσα — море")
+    assert len(await _packs(db)) == 1
+
+
+async def test_replacing_archives_the_old_pack_and_starts_a_new_import(
+    telegram: FakeTelegram, db: async_sessionmaker[AsyncSession]
+) -> None:
+    await telegram.send("/add")
+    await telegram.send(THREE_WORDS)
+    await telegram.press("✅")
+
+    await telegram.send("/add")
+    await telegram.press("📦")
+    await telegram.send("η θάλασσα — море\nο ήλιος — солнце")
+    await telegram.press("✅")
+
+    statuses = sorted(pack.status for pack in await _packs(db))
+    assert statuses == [PackStatus.ACTIVE, PackStatus.ARCHIVED]
+
+    answers = await telegram.send("/pack")
+    assert "η θάλασσα" in answers[-1]
+    assert "το νερό" not in answers[-1], "старая пачка ушла в архив"
+
+
+async def test_keeping_the_current_pack_returns_to_it(
+    telegram: FakeTelegram, db: async_sessionmaker[AsyncSession]
+) -> None:
+    await telegram.send("/add")
+    await telegram.send(THREE_WORDS)
+    await telegram.press("✅")
+
+    await telegram.send("/add")
+    answers = await telegram.press("↩︎")
+
+    assert "1. <b>το νερό</b> — вода" in answers[-1], "показываем ту пачку, что осталась"
+    packs_ = await _packs(db)
+    assert len(packs_) == 1
+    assert packs_[0].status == PackStatus.ACTIVE
+
+
+async def _stray_draft(db: async_sessionmaker[AsyncSession]) -> None:
+    """Черновик в обход `/add` — такой остался бы от версии бота без экрана замены.
+
+    Через интерфейс это состояние больше не собрать: `/add` при активной пачке
+    спрашивает, а замена сначала архивирует. Но в базе оно есть, и `/pack` с
+    подтверждением обязаны с ним справляться.
+    """
+    async with db() as session:
+        user_id = (await session.scalars(select(Pack.user_id))).first()
+        assert user_id is not None
+        draft = Pack(user_id=user_id, title="Пачка из прошлого", status=PackStatus.DRAFT)
+        session.add(draft)
+        await session.flush()
+        session.add(
+            Word(
+                pack_id=draft.id,
+                user_id=user_id,
+                lemma="θαλασσα",
+                lemma_accented="η θάλασσα",
+                translation_ru="море",
+                source=WordSource.TEXT,
+            )
+        )
+        await session.commit()
+
+
+async def test_a_draft_comes_before_the_active_pack(
+    telegram: FakeTelegram, db: async_sessionmaker[AsyncSession]
+) -> None:
+    """Незаконченный импорт — долг перед человеком, /pack возвращает к нему."""
+    await telegram.send("/add")
+    await telegram.send(THREE_WORDS)
+    await telegram.press("✅")
+    await _stray_draft(db)
+
+    answers = await telegram.send("/pack")
+    screen = answers[-1]
+
+    assert "η θάλασσα" in screen
+    assert "το νερό" not in screen
+    assert telegram.find_button("✅") is not None, "это экран подтверждения, а не просмотра"
+
+
+async def test_only_one_pack_stays_active_per_user(
+    telegram: FakeTelegram, db: async_sessionmaker[AsyncSession]
+) -> None:
+    """Инвариант держит `activate`, а не только экран: черновик мог приехать в обход."""
+    await telegram.send("/add")
+    await telegram.send(THREE_WORDS)
+    await telegram.press("✅")
+    await _stray_draft(db)
+
+    await telegram.send("/pack")
+    await telegram.press("✅")
+
+    active = [pack for pack in await _packs(db) if pack.status == PackStatus.ACTIVE]
+    assert len(active) == 1
+    assert active[0].title == "Пачка из прошлого"
 
 
 async def test_confirm_names_the_words_the_model_skipped(

@@ -28,6 +28,7 @@ class Route(StrEnum):
     FRAMES = "R3"
     TURN = "R4"
     FREE_CHAT = "R5"
+    TRANSLATE = "R6"
 
 
 Role = Literal["system", "user", "assistant"]

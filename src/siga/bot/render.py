@@ -8,10 +8,13 @@
 from __future__ import annotations
 
 import datetime as dt
+import html
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
-from siga.core.enums import Gender, PartOfSpeech
+from siga.core.enums import ErrorType, Gender, PartOfSpeech, Verdict
+from siga.core.memory import Profile
 
 #: Telegram режет сообщение на 4096 символах. Оставляем запас на заголовок и
 #: на то, что HTML-теги считаются вместе с текстом.
@@ -50,6 +53,40 @@ MONTHS_RU = (
     "ноября",
     "декабря",
 )
+
+
+#: Итог слова за эпизод: значок и подпись. Ключи — `Verdict`, но тип строковый:
+#: оценки приезжают из JSON модели через базу, где лежат строками.
+VERDICT_RU: dict[str, tuple[str, str]] = {
+    Verdict.CORRECT: ("✅", "верно"),
+    Verdict.ALMOST: ("≈", "почти — подвела форма"),
+    Verdict.INCORRECT: ("✗", "мимо"),
+}
+
+#: Чем ошибся человек — по-русски, для `🔍 Разбор`.
+#: `other` пропущен нарочно: «прочее» в скобках не объясняет ничего.
+ERROR_TYPE_RU: dict[str, str] = {
+    ErrorType.CASE: "падеж",
+    ErrorType.GENDER: "род",
+    ErrorType.ARTICLE: "артикль",
+    ErrorType.VERB_FORM: "форма глагола",
+    ErrorType.ACCENT: "ударение",
+    ErrorType.SPELLING: "орфография",
+    ErrorType.WRONG_WORD: "не то слово",
+    ErrorType.LATIN: "латиница",
+}
+
+NOTHING_TO_ANALYSE = "Разбирать нечего — ошибок не было."
+
+
+def plain(text: str) -> str:
+    """Чужой текст внутрь HTML-сообщения.
+
+    Реплики Ника и ответы человека разметки не несут, но угловая скобка в них
+    случиться может — и тогда Telegram отвергнет сообщение целиком. Экранируем
+    на входе, а не надеемся, что не встретится.
+    """
+    return html.escape(text, quote=False)
 
 
 def pack_title(when: dt.date) -> str:
@@ -148,12 +185,15 @@ def active_pack_screen(
 
     footer = []
     if days_left is not None:
-        footer = ["", _deadline(days_left)]
+        footer = ["", deadline_line(days_left)]
 
     return _chunk([header, "", *lines, *footer])
 
 
-def _deadline(days_left: int) -> str:
+def deadline_line(days_left: int | None) -> str:
+    """Строка про срок пачки. Пустая, если срока нет: молчание честнее выдумки."""
+    if days_left is None:
+        return ""
     if days_left > 0:
         return f"До конца периода — {days_left} {days_left_form(days_left)}."
     return "Период закончился."
@@ -238,4 +278,164 @@ def word_card(card: Card, *, position: int, total: int, title: str) -> str:
     if not card.enriched:
         lines += ["", "<i>Грамматику для этого слова я ещё не собрал.</i>"]
 
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True, slots=True)
+class WordOutcome:
+    """Итог одного целевого слова за эпизод — `srs.Outcome` плюс само слово."""
+
+    lemma: str
+    verdict: str | None = None
+    used: bool = False
+
+
+def closing_block(outcomes: Sequence[WordOutcome]) -> str:
+    """Блок «Как прошло» под прощальной репликой (FR-EP-8).
+
+    Отдельным сообщением от реплики Ника, а не в ней: итог — это интерфейс
+    бота, а не слова персонажа (§6). Не прозвучавшее слово получает не крестик,
+    а точку: молчание не ошибка (FR-EP-7), и человеку это надо сказать прямо.
+    """
+    lines = ["<b>Как прошло</b>", ""]
+    for item in outcomes:
+        if not item.used or item.verdict is None:
+            lines.append(f"· <b>{item.lemma}</b> — не прозвучало, вернётся")
+            continue
+        mark, label = VERDICT_RU.get(item.verdict, ("·", "без оценки"))
+        lines.append(f"{mark} <b>{item.lemma}</b> — {label}")
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisTurn:
+    """Один ход глазами разбора: что человек сказал и что с этим не так."""
+
+    user_text: str | None = None
+    analysis_ru: str | None = None
+    corrections: Sequence[Mapping[str, Any]] = ()
+
+
+def correction_line(item: Mapping[str, Any], lemmas: Mapping[int, str]) -> str | None:
+    """«νερώ → νερό (падеж)». None — записи нечего показать.
+
+    Исправления пишет модель, и полей в них может не быть: без правильной
+    формы строка бессмысленна, а без ошибочной подставляем словарное слово —
+    человек всё равно узнает, о чём речь.
+    """
+    correct_form = item.get("correct_form")
+    if not correct_form:
+        return None
+
+    word_id = item.get("word_id")
+    was = item.get("user_form") or (lemmas.get(word_id) if isinstance(word_id, int) else None)
+    head = f"{plain(str(was))} → {plain(str(correct_form))}" if was else plain(str(correct_form))
+
+    label = ERROR_TYPE_RU.get(str(item.get("error_type") or ""))
+    return f"• {head} ({label})" if label else f"• {head}"
+
+
+def analysis_screen(turns: Sequence[AnalysisTurn], *, lemmas: Mapping[int, str]) -> str:
+    """Разбор по всему эпизоду (FR-CHK-2).
+
+    По ходам, а не одним списком ошибок: человек вспоминает свою фразу и
+    видит, что в ней было не так. Ход без замечаний пропускаем — строка
+    «тут всё хорошо» в разборе только удлиняет экран.
+    """
+    blocks: list[str] = []
+    for turn in turns:
+        details = [line for item in turn.corrections if (line := correction_line(item, lemmas))]
+        if turn.analysis_ru:
+            details.append(plain(turn.analysis_ru))
+        if not details:
+            continue
+        head = [f"<i>{plain(turn.user_text)}</i>"] if turn.user_text else []
+        blocks.append("\n".join([*head, *details]))
+
+    if not blocks:
+        return NOTHING_TO_ANALYSE
+    return "\n\n".join(["<b>Разбор</b>", *blocks])
+
+
+def memory_screen(profile: Profile) -> str:
+    """Профиль так, как его читает человек (FR-MEM-4).
+
+    Показывается всё, что уходит в промпт, — иначе экран перестаёт быть
+    ответом на вопрос «что он про меня знает». Факты пронумерованы: номер —
+    это адрес кнопки, которой факт удаляют.
+    """
+    blocks: list[str] = ["<b>Что я о тебе помню</b>"]
+
+    if profile.facts:
+        lines = [f"{number}. {plain(fact)}" for number, fact in enumerate(profile.facts, start=1)]
+        blocks.append("\n".join(["<b>Про тебя</b>", *lines]))
+
+    if profile.recurring_errors:
+        lines = [f"· {plain(item)}" for item in profile.recurring_errors]
+        blocks.append("\n".join(["<b>Что даётся тяжело</b>", *lines]))
+
+    if profile.recent_topics:
+        topics = ", ".join(plain(topic) for topic in profile.recent_topics)
+        blocks.append(f"<b>О чём говорили</b>\n{topics}")
+
+    if profile.tone_notes:
+        blocks.append(f"<b>Как с тобой говорить</b>\n{plain(profile.tone_notes)}")
+
+    return "\n\n".join(blocks)
+
+
+def episodes_form(count: int) -> str:
+    return plural_ru(count, "разговор", "разговора", "разговоров")
+
+
+def gap_form(minutes: int) -> str:
+    """Промежуток по-человечески: «45 минут», «1 час», «1 час 30 минут»."""
+    hours, rest = divmod(minutes, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours} {plural_ru(hours, 'час', 'часа', 'часов')}")
+    if rest or not hours:
+        parts.append(f"{rest} {plural_ru(rest, 'минута', 'минуты', 'минут')}")
+    return " ".join(parts)
+
+
+def settings_screen(
+    *,
+    episodes_per_day: int,
+    min_gap_minutes: int,
+    window_start: dt.time,
+    window_end: dt.time,
+    tz: str,
+    paused: bool,
+    fits_per_day: int,
+) -> str:
+    """Экран расписания: что настроено сейчас (FR-SCH-1, FR-SCH-7).
+
+    Одним экраном, а не четырьмя отдельными командами: настройки связаны —
+    шесть разговоров в двухчасовом окне не поместятся, — и человек должен
+    видеть их рядом, чтобы понимать, почему разговоров приходит меньше, чем он
+    просил.
+
+    `fits_per_day` считает хендлер, а не этот модуль: раскладка дня — дело
+    планировщика, и повторять её арифметику в шаблоне значит однажды разойтись
+    с ней в ответе.
+    """
+    span = f"{window_start:%H:%M}–{window_end:%H:%M}"
+    lines = [
+        "<b>Расписание</b>",
+        "",
+        f"Разговоров в день: <b>{episodes_per_day}</b>",
+        f"Когда писать: <b>{span}</b>",
+        f"Между разговорами: <b>не меньше {gap_form(min_gap_minutes)}</b>",
+        f"Часовой пояс: <b>{plain(tz)}</b>",
+    ]
+    if fits_per_day < episodes_per_day:
+        lines += [
+            "",
+            f"Столько в окно не помещается — приду "
+            f"<b>{fits_per_day} {episodes_form(fits_per_day)}</b>. "
+            f"Раздвинь окно или сократи промежуток.",
+        ]
+    if paused:
+        lines += ["", "Сейчас на паузе — я не пишу первым. Период пачки при этом стоит."]
     return "\n".join(lines)

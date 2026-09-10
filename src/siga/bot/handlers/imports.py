@@ -97,9 +97,78 @@ async def _show_pack(message: Message, session: AsyncSession, pack: Pack) -> Non
 
 
 @router.message(Command("add"))
-async def handle_add(message: Message, state: FSMContext) -> None:
+async def handle_add(message: Message, session: AsyncSession, state: FSMContext) -> None:
+    """Начать импорт — или сперва спросить, что делать с текущей пачкой.
+
+    Активная пачка у человека одна (§5.8): период, отчёт в конце и перенос
+    невыученных слов написаны в единственном числе, и две пачки сразу ломают
+    всё три. Молча архивировать прежнюю нельзя — человек мог набрать `/add`
+    из любопытства, а не чтобы попрощаться с недоученным списком.
+    """
+    if message.from_user is None:
+        return
+
+    user_id = await _current_user_id(session, message.from_user.id)
+    active = await packs.get_active(session, user_id=user_id)
+    if active is not None:
+        await _ask_about_replacing(message, session, active)
+        return
+
     await state.set_state(ImportFlow.waiting_list)
     await message.answer(texts.ADD_PROMPT)
+
+
+async def _ask_about_replacing(message: Message, session: AsyncSession, active: Pack) -> None:
+    words = await packs.list_words(session, pack_id=active.id)
+    await message.answer(
+        texts.ADD_WHILE_ACTIVE.format(
+            title=active.title,
+            count=len(words),
+            word_form=render.words_form(len(words)),
+            deadline=render.deadline_line(cards.days_left(active, dt.datetime.now(dt.UTC))),
+        ),
+        reply_markup=keyboards.replace_pack(),
+    )
+
+
+@router.callback_query(keyboards.PackAction.filter(F.action == "replace"))
+async def handle_replace(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    """Убрать активную пачку в архив и сразу начать новый импорт."""
+    if callback.from_user is None or not isinstance(callback.message, Message):
+        await callback.answer()
+        return
+
+    user_id = await _current_user_id(session, callback.from_user.id)
+    active = await packs.get_active(session, user_id=user_id)
+    await callback.answer()
+    if active is None:
+        # Пачку успели убрать другим окном — цель нажатия уже достигнута.
+        await state.set_state(ImportFlow.waiting_list)
+        await callback.message.answer(texts.ADD_PROMPT)
+        return
+
+    await packs.archive(session, pack=active)
+    log.info("пачка %s убрана в архив перед новым импортом", active.id)
+    await state.set_state(ImportFlow.waiting_list)
+    await callback.message.answer(
+        f"{texts.ADD_ARCHIVED.format(title=active.title)}\n\n{texts.ADD_PROMPT}"
+    )
+
+
+@router.callback_query(keyboards.PackAction.filter(F.action == "keep"))
+async def handle_keep(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
+    """Отказ от новой пачки: возвращаем человека к текущей."""
+    if callback.from_user is None or not isinstance(callback.message, Message):
+        await callback.answer()
+        return
+
+    user_id = await _current_user_id(session, callback.from_user.id)
+    active = await packs.get_active(session, user_id=user_id)
+    await state.clear()
+    await callback.answer()
+    await callback.message.answer(texts.ADD_KEPT)
+    if active is not None:
+        await cards.show_pack(callback.message, session, active)
 
 
 @router.message(Command("cancel"))

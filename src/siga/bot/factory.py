@@ -13,10 +13,18 @@ from siga.bot.middlewares import DbSessionMiddleware
 from siga.config import Settings
 from siga.llm.base import LlmClient
 
+#: Меню команд в Telegram. Порядок — по частоте, а не по алфавиту: разговор
+#: сверху, потому что ради него всё и затевалось.
 BOT_COMMANDS = [
-    BotCommand(command="start", description="Начало"),
+    BotCommand(command="next", description="Начать разговор"),
+    BotCommand(command="end", description="Закончить разговор"),
     BotCommand(command="add", description="Загрузить пачку слов"),
     BotCommand(command="pack", description="Показать текущую пачку"),
+    BotCommand(command="memory", description="Что Ник обо мне помнит"),
+    BotCommand(command="settings", description="Расписание: когда и как часто"),
+    BotCommand(command="pause", description="Пауза"),
+    BotCommand(command="resume", description="Продолжить"),
+    BotCommand(command="start", description="Начало"),
     BotCommand(command="help", description="Что умеет бот"),
 ]
 

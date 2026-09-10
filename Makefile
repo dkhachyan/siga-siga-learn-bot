@@ -39,7 +39,7 @@ down:
 	docker compose down
 
 logs:
-	docker compose logs -f bot
+	docker compose logs -f bot scheduler sender
 
 migrate:  ## накатить миграции на локальную базу
 	uv run alembic upgrade head

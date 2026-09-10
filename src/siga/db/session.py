@@ -9,6 +9,9 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+type SessionFactory = async_sessionmaker[AsyncSession]
+"""Как сессия достаётся тем, кто живёт дольше одной сессии, — воркерам."""
+
 
 def create_engine(database_url: str, *, echo: bool = False) -> AsyncEngine:
     return create_async_engine(

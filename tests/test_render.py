@@ -11,6 +11,7 @@ from siga.bot.render import (
     Card,
     WordLine,
     active_pack_screen,
+    gap_form,
     pack_screen,
     pack_title,
     plural_ru,
@@ -50,6 +51,22 @@ def test_plural_ru_is_not_hardcoded_to_words() -> None:
     assert plural_ru(1, "день", "дня", "дней") == "день"
     assert plural_ru(3, "день", "дня", "дней") == "дня"
     assert plural_ru(13, "день", "дня", "дней") == "дней"
+
+
+@pytest.mark.parametrize(
+    ("minutes", "expected"),
+    [
+        (15, "15 минут"),
+        (45, "45 минут"),
+        (60, "1 час"),
+        (90, "1 час 30 минут"),
+        (120, "2 часа"),
+        (121, "2 часа 1 минута"),
+        (480, "8 часов"),
+    ],
+)
+def test_gap_form_reads_like_speech_not_like_a_timer(minutes: int, expected: str) -> None:
+    assert gap_form(minutes) == expected
 
 
 def test_pack_title_uses_genitive_month() -> None:

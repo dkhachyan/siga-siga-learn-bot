@@ -22,6 +22,9 @@ class ScriptedClient:
         self.asked: list[list[Message]] = []
         self.routes: list[Route] = []
         self.json_modes: list[bool] = []
+        self.max_output: list[int | None] = []
+        """§8.2 требует явный потолок выхода на каждом маршруте — значит, его
+        отсутствие должно быть видно тесту, а не только в счёте провайдера."""
 
     @property
     def calls(self) -> int:
@@ -38,6 +41,7 @@ class ScriptedClient:
         self.asked.append(list(messages))
         self.routes.append(route)
         self.json_modes.append(json_mode)
+        self.max_output.append(max_output_tokens)
         if not self._answers:
             raise AssertionError(f"сценарий кончился, а спросили ещё раз ({self.calls}-й)")
 

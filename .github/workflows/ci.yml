@@ -29,7 +29,9 @@ jobs:
       - name: pytest
         run: uv run pytest
 
-  migrations:
+  # Всё, чему нужен настоящий Postgres: миграции туда и обратно, сверка
+  # моделей со схемой и тесты слоя хранения.
+  database:
     runs-on: ubuntu-latest
     services:
       postgres:

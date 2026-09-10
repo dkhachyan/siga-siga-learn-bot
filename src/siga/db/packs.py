@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Mapping, Sequence
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from siga.core.enums import PackStatus, WordSource
@@ -56,12 +56,11 @@ async def get_draft(session: AsyncSession, *, user_id: int) -> Pack | None:
 
 
 async def get_active(session: AsyncSession, *, user_id: int) -> Pack | None:
-    """Пачка, по которой сейчас идёт работа.
+    """Пачка, по которой сейчас идёт работа. Она у человека одна (§5.8).
 
-    Берём самую свежую: спецификация говорит про активную пачку в единственном
-    числе (§5.8), но запрета «две сразу» в базе нет — и пока в `/add` нет
-    проверки, две активные завести можно. Отдавать при этом старую было бы
-    хуже всего: человек смотрел бы не на то, что только что загрузил.
+    Порядок в запросе оставлен, хотя после миграции 0003 уникальный индекс и
+    так не даёт завести вторую: сортировка — это то, что делало выборку
+    однозначной до индекса, и повторяется в самой миграции при уборке данных.
     """
     pack: Pack | None = await session.scalar(
         select(Pack)
@@ -71,10 +70,33 @@ async def get_active(session: AsyncSession, *, user_id: int) -> Pack | None:
     return pack
 
 
+async def archive(session: AsyncSession, *, pack: Pack) -> Pack:
+    """Убрать пачку из работы. Слова и прогресс остаются — это и есть архив.
+
+    Удалять нечего: по словам архива работает `/review` (§5.9), а история
+    употреблений — половина статистики. Меняется только статус.
+    """
+    pack.status = PackStatus.ARCHIVED
+    await session.commit()
+    return pack
+
+
 async def list_words(session: AsyncSession, *, pack_id: int) -> list[Word]:
     """Слова пачки в том порядке, в котором их прислали."""
     rows = await session.scalars(select(Word).where(Word.pack_id == pack_id).order_by(Word.id))
     return list(rows)
+
+
+async def lemmas(session: AsyncSession, *, word_ids: Sequence[int]) -> dict[int, str]:
+    """Слова по номерам — для итога эпизода и разбора.
+
+    Пропавшее слово (пачку удалили посреди разговора) просто не попадает в
+    словарь: показать его нечем, а падать из-за этого не за что.
+    """
+    if not word_ids:
+        return {}
+    rows = await session.scalars(select(Word).where(Word.id.in_(set(word_ids))))
+    return {word.id: word.lemma_accented for word in rows}
 
 
 async def create_draft(
@@ -223,7 +245,22 @@ async def activate(
 
     `now` передаётся аргументом, а не берётся из `utcnow()`: иначе тест на
     границы периода пришлось бы писать через патч времени.
+
+    Прежняя активная пачка уходит в архив здесь же. Спрашивает об этом `/add`,
+    но активной пачка становится только тут — и если инвариант «одна активная»
+    держать в хендлере, следующий вход (перенос слов в конце периода, §5.8)
+    придётся не забыть про него снова. Уникальный индекс иначе просто упадёт.
     """
+    await session.execute(
+        update(Pack)
+        .where(
+            Pack.user_id == pack.user_id,
+            Pack.status == PackStatus.ACTIVE,
+            Pack.id != pack.id,
+        )
+        .values(status=PackStatus.ARCHIVED)
+    )
+
     pack.status = PackStatus.ACTIVE
     pack.period_days = period_days
     pack.started_at = now

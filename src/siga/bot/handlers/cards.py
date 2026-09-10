@@ -38,7 +38,7 @@ def _card(word: Word) -> render.Card:
     )
 
 
-def _days_left(pack: Pack, now: dt.datetime) -> int | None:
+def days_left(pack: Pack, now: dt.datetime) -> int | None:
     """Сколько дней осталось до конца периода. None — срок не выставлен."""
     if pack.ends_at is None:
         return None
@@ -61,7 +61,7 @@ async def show_pack(message: Message, session: AsyncSession, pack: Pack) -> None
         for word in words
     ]
     chunks = render.active_pack_screen(
-        pack.title, lines, days_left=_days_left(pack, dt.datetime.now(dt.UTC))
+        pack.title, lines, days_left=days_left(pack, dt.datetime.now(dt.UTC))
     )
     for chunk in chunks[:-1]:
         await message.answer(chunk)
@@ -137,4 +137,4 @@ async def handle_list(callback: CallbackQuery, session: AsyncSession) -> None:
     await show_pack(message, session, pack)
 
 
-__all__ = ["router", "show_pack"]
+__all__ = ["days_left", "router", "show_pack"]

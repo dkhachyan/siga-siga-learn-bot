@@ -5,39 +5,23 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import signal
-import sys
 
 from aiogram import Bot, Dispatcher
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
-from pydantic import ValidationError
 
 from siga.bot import create_bot, create_dispatcher, set_bot_commands
-from siga.config import Settings, get_settings
+from siga.config import Settings
 from siga.db import create_engine, create_session_factory
 from siga.llm.factory import create_llm_client
 from siga.logging import setup_logging
+from siga.service import load_settings, stop_event
 
 log = logging.getLogger(__name__)
 
 
 async def _health(_: web.Request) -> web.Response:
     return web.json_response({"status": "ok"})
-
-
-def _stop_event() -> asyncio.Event:
-    """Событие, которое взводится по SIGINT и SIGTERM.
-
-    SIGTERM важен отдельно: в контейнере остановка приходит именно им, и без
-    обработчика процесс умирает, не сняв вебхук и не закрыв пул соединений.
-    """
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        with contextlib.suppress(NotImplementedError):  # Windows
-            loop.add_signal_handler(sig, stop.set)
-    return stop
 
 
 async def _run_polling(bot: Bot, dp: Dispatcher) -> None:
@@ -50,7 +34,7 @@ async def _run_polling(bot: Bot, dp: Dispatcher) -> None:
 
 async def _run_webhook(bot: Bot, dp: Dispatcher, settings: Settings) -> None:
     secret = settings.webhook_secret.get_secret_value() if settings.webhook_secret else None
-    stop = _stop_event()
+    stop = stop_event()
 
     await bot.set_webhook(
         settings.webhook_url,
@@ -107,19 +91,5 @@ async def run(settings: Settings) -> None:
 
 
 def main() -> None:
-    try:
-        settings = get_settings()
-    except ValidationError as exc:
-        # Ошибка конфигурации — это не баг, а незаполненный .env.
-        # Стек-трейс тут только мешает прочитать, чего не хватает.
-        print("Не могу запуститься — проблема в настройках:\n", file=sys.stderr)
-        for error in exc.errors():
-            field = ".".join(str(part) for part in error["loc"]) or "конфигурация"
-            print(
-                f"  {field.upper()}: {error['msg'].removeprefix('Value error, ')}", file=sys.stderr
-            )
-        print("\nСм. .env.example", file=sys.stderr)
-        raise SystemExit(2) from None
-
     with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(run(settings))
+        asyncio.run(run(load_settings()))

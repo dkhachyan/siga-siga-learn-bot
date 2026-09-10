@@ -34,13 +34,28 @@ services:
 
   bot:
     <<: *app
-    depends_on:
+    depends_on: &after-migrate
       db:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
     ports:
       - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+
+  # Воркеры расписания (§9). Отдельными контейнерами, а не задачами внутри
+  # бота: перезапуск бота не должен стирать день, а планировщик, который
+  # разговаривает с моделью по минуте, не должен задерживать отправку.
+  scheduler:
+    <<: *app
+    command: ["python", "-m", "siga.workers.scheduler"]
+    depends_on: *after-migrate
+    restart: unless-stopped
+
+  sender:
+    <<: *app
+    command: ["python", "-m", "siga.workers.sender"]
+    depends_on: *after-migrate
     restart: unless-stopped
 
 volumes:

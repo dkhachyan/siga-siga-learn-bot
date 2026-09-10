@@ -15,7 +15,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.base import BaseSession
 from aiogram.enums import ParseMode
-from aiogram.methods import TelegramMethod
+from aiogram.methods import AnswerCallbackQuery, TelegramMethod
 from aiogram.methods.base import TelegramType
 from aiogram.types import (
     CallbackQuery,
@@ -122,8 +122,13 @@ class FakeTelegram:
         )
         return await self._feed(Update(update_id=self._next_update(), message=message))
 
-    async def click(self, data: str) -> list[str]:
-        """Нажатие инлайн-кнопки с заданным callback_data."""
+    async def click(self, data: str, *, from_user_id: int = TG_USER_ID) -> list[str]:
+        """Нажатие инлайн-кнопки с заданным callback_data.
+
+        `from_user_id` — для проверок на подделку: данные кнопки видны в
+        клиенте и подставляются руками, так что чужой номер эпизода в них
+        приходит от постороннего человека.
+        """
         self._message_id += 1
         origin = Message(
             message_id=self._message_id,
@@ -134,7 +139,7 @@ class FakeTelegram:
         )
         callback = CallbackQuery(
             id=f"cb{self._message_id}",
-            from_user=User(id=TG_USER_ID, is_bot=False, first_name="Человек"),
+            from_user=User(id=from_user_id, is_bot=False, first_name="Человек"),
             chat_instance="test",
             message=origin,
             data=data,
@@ -177,6 +182,20 @@ class FakeTelegram:
             for call in self.session.calls
             if type(call).__name__ == "EditMessageText" and isinstance(call.text, str)
         ]
+
+    @property
+    def alerts(self) -> list[AnswerCallbackQuery]:
+        """Всплывающие окна ответом на нажатие.
+
+        Возвращаются вызовами целиком, а не текстами: у окна важно ещё и
+        `show_alert` — без него Telegram показывает исчезающую подсказку
+        сверху, которую человек не успевает прочитать.
+        """
+        return [call for call in self.session.calls if isinstance(call, AnswerCallbackQuery)]
+
+    @property
+    def last_alert(self) -> AnswerCallbackQuery | None:
+        return self.alerts[-1] if self.alerts else None
 
     @property
     def keyboards(self) -> list[InlineKeyboardMarkup]:

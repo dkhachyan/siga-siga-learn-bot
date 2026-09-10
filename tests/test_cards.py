@@ -82,19 +82,6 @@ async def test_pack_without_any_pack_says_so(telegram: FakeTelegram) -> None:
     assert "нет" in answers[-1].lower()
 
 
-async def test_a_draft_comes_before_the_active_pack(active: FakeTelegram) -> None:
-    """Незаконченный импорт — долг перед человеком, /pack возвращает к нему."""
-    await active.send("/add")
-    await active.send("η θάλασσα — море\nο ήλιος — солнце\nτο βουνό — гора")
-
-    answers = await active.send("/pack")
-    screen = answers[-1]
-
-    assert "η θάλασσα" in screen
-    assert "το νερό" not in screen
-    assert active.find_button("✅") is not None, "это экран подтверждения, а не просмотра"
-
-
 async def test_cards_of_a_pack_that_lost_its_words(active: FakeTelegram) -> None:
     """Кнопка помнит номер, которого в пачке уже нет — берём по модулю."""
     answers = await active.click("card:open:99")
