@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 _TOKEN_RE = re.compile(r"^\d+:[\w-]{30,}$")
 
@@ -29,6 +29,15 @@ class Settings(BaseSettings):
 
     bot_token: SecretStr
     bot_mode: Literal["polling", "webhook"] = "polling"
+
+    #: Кого пускать в бота — номера Telegram через запятую. Пустой список
+    #: означает «открыт всем»: локальный запуск и тесты не должны требовать
+    #: настройки, а про открытого бота предупреждает `runner` на старте.
+    #:
+    #: Номера, а не `@username`: имя владелец меняет и передаёт, номер — нет.
+    #: Инвайты (§5.1, этап 6) встанут сверху этого списка, а не вместо него:
+    #: тот, кто выдаёт коды, сам должен быть в нём.
+    allowed_tg_user_ids: Annotated[frozenset[int], NoDecode] = frozenset()
 
     webhook_base_url: str | None = None
     webhook_path: str = "/telegram/webhook"
@@ -52,6 +61,21 @@ class Settings(BaseSettings):
     #: дороже ожидания — партию придётся спрашивать заново, снова за деньги.
     llm_timeout_s: float = 120.0
     llm_max_retries: int = 3
+
+    @field_validator("allowed_tg_user_ids", mode="before")
+    @classmethod
+    def _split_ids(cls, value: object) -> object:
+        """Разобрать «237723839, 42» в набор номеров.
+
+        Без этого pydantic-settings ждёт от множества строку JSON, а в `.env`
+        по-человечески пишут через запятую (отсюда же и `NoDecode`). Мусор
+        внутри не проглатываем: непонятный номер — это опечатка, из-за которой
+        бот либо не пустит хозяина, либо пустит лишнего, и узнать об этом
+        лучше на старте, чем из переписки.
+        """
+        if not isinstance(value, str):
+            return value
+        return [chunk.strip() for chunk in value.split(",") if chunk.strip()]
 
     @field_validator("bot_token")
     @classmethod

@@ -68,6 +68,25 @@ async def _run_webhook(bot: Bot, dp: Dispatcher, settings: Settings) -> None:
         await runner.cleanup()
 
 
+def _log_access(settings: Settings) -> None:
+    """Сказать в журнал, кого бот пускает.
+
+    Открытый бот — это не только чужие в переписке, но и чужие траты по твоему
+    ключу LLM, поэтому предупреждение, а не `info`: такую строку видно в любом
+    хвосте журнала, и «я же закрывал» перестаёт быть догадкой.
+    """
+    if settings.allowed_tg_user_ids:
+        # Номерами, а не числом: «я же его добавлял» перестаёт быть догадкой.
+        # NFR-10 это позволяет — `tg_user_id` в журнале и так единственное,
+        # чем человек в нём обозначается.
+        log.info(
+            "пускаю по ALLOWED_TG_USER_IDS: %s",
+            ", ".join(str(number) for number in sorted(settings.allowed_tg_user_ids)),
+        )
+    else:
+        log.warning("ALLOWED_TG_USER_IDS пуст — бот отвечает всем, кто напишет")
+
+
 async def run(settings: Settings) -> None:
     setup_logging(settings.log_level)
 
@@ -77,7 +96,8 @@ async def run(settings: Settings) -> None:
     llm = create_llm_client(settings)
 
     bot = create_bot(settings)
-    dp = create_dispatcher(session_factory, llm)
+    dp = create_dispatcher(session_factory, llm, allowed=settings.allowed_tg_user_ids)
+    _log_access(settings)
 
     try:
         if settings.bot_mode == "webhook":

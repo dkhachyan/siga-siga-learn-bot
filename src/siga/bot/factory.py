@@ -9,7 +9,7 @@ from aiogram.types import BotCommand
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from siga.bot.handlers import build_router
-from siga.bot.middlewares import DbSessionMiddleware
+from siga.bot.middlewares import AllowlistMiddleware, DbSessionMiddleware
 from siga.config import Settings
 from siga.llm.base import LlmClient
 
@@ -39,6 +39,8 @@ def create_bot(settings: Settings) -> Bot:
 def create_dispatcher(
     session_factory: async_sessionmaker[AsyncSession],
     llm: LlmClient,
+    *,
+    allowed: frozenset[int] = frozenset(),
 ) -> Dispatcher:
     """Собрать диспетчер. В процессе вызывается один раз.
 
@@ -50,8 +52,15 @@ def create_dispatcher(
     Клиент LLM живёт весь процесс, поэтому едет в workflow-данных, а не в
     мидлвари: хендлеру достаточно объявить параметр `llm`. Сессия базы — иначе,
     она своя на каждый апдейт.
+
+    `allowed` пустой по умолчанию — бот отвечает всем. Это удобно локально и в
+    тестах, а прод про такое узнаёт предупреждением в журнале (см. `runner`).
     """
     dp = Dispatcher(llm=llm)
+
+    # Первой и на весь апдейт: незнакомец не должен доходить ни до сессии
+    # базы, ни до хендлеров — см. `AllowlistMiddleware`.
+    dp.update.outer_middleware(AllowlistMiddleware(allowed))
 
     db_session = DbSessionMiddleware(session_factory)
     dp.message.middleware(db_session)

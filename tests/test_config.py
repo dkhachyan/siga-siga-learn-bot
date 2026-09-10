@@ -67,6 +67,33 @@ def test_malformed_token_is_rejected(bad: str) -> None:
         Settings(_env_file=None, bot_token=bad)  # type: ignore[arg-type]
 
 
+# --- кого пускать -------------------------------------------------------------
+
+
+def test_the_bot_is_open_until_a_list_is_given() -> None:
+    """Пустой список — «отвечает всем»: про это предупреждает `runner`."""
+    assert Settings(**MINIMAL).allowed_tg_user_ids == frozenset()  # type: ignore[arg-type]
+
+
+def test_the_allowlist_is_written_by_hand_with_commas() -> None:
+    """В `.env` пишут «237, 42», а не JSON-массив."""
+    settings = Settings(**MINIMAL, allowed_tg_user_ids="237723839, 42")  # type: ignore[arg-type]
+
+    assert settings.allowed_tg_user_ids == frozenset({237723839, 42})
+
+
+def test_a_trailing_comma_is_not_a_user() -> None:
+    settings = Settings(**MINIMAL, allowed_tg_user_ids="237723839,")  # type: ignore[arg-type]
+
+    assert settings.allowed_tg_user_ids == frozenset({237723839})
+
+
+def test_a_mistyped_number_stops_the_startup() -> None:
+    """Опечатка в номере — это либо не пущенный хозяин, либо пущенный лишний."""
+    with pytest.raises(ValidationError):
+        Settings(**MINIMAL, allowed_tg_user_ids="237723839, @vasya")  # type: ignore[arg-type]
+
+
 # --- LLM ---------------------------------------------------------------------
 
 
