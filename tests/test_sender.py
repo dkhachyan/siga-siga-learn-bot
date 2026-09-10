@@ -129,7 +129,11 @@ def _sessions(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
 async def test_a_scheduled_reply_arrives_with_its_buttons(
     session: AsyncSession, engine: AsyncEngine, bot: Bot
 ) -> None:
-    """Иначе у пришедшего по расписанию эпизода нет ни разбора, ни «не знаю»."""
+    """Иначе у пришедшего по расписанию эпизода нет ни разбора, ни подсказки.
+
+    Кнопки собирает отправщик, а не хендлер, — и адрес реплики он знает только
+    потому, что номер вводного хода всегда нулевой.
+    """
     _, plan = await _planned_day(session)
 
     assert await sender.deliver_one(_sessions(engine), bot, now=plan.events[0].fire_at)
@@ -140,7 +144,8 @@ async def test_a_scheduled_reply_arrives_with_its_buttons(
     assert markup is not None
     labels = [button.text for row in markup.inline_keyboard for button in row]
     assert any(label.endswith("Разбор") for label in labels)
-    assert any(label.endswith("Не знаю") for label in labels)
+    assert any(label.endswith("Что ответить") for label in labels)
+    assert any(label.endswith("Перевод") for label in labels)
 
 
 async def test_a_nudge_arrives_without_buttons(

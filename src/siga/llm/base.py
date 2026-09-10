@@ -29,6 +29,7 @@ class Route(StrEnum):
     TURN = "R4"
     FREE_CHAT = "R5"
     TRANSLATE = "R6"
+    HINT = "R7"
 
 
 Role = Literal["system", "user", "assistant"]

@@ -436,6 +436,22 @@ async def _words_of(session: AsyncSession, episode: Episode) -> list[WordBrief]:
     return briefs
 
 
+async def words_to_practise(session: AsyncSession, episode: Episode) -> list[WordBrief]:
+    """Целевые слова, которые в этом разговоре ещё не прозвучали (FR-EP-7).
+
+    Нужны подсказке: предлагать сказать то, что уже сказано, значит гонять
+    человека по кругу и тратить ход впустую.
+
+    Прозвучало всё — отдаём все целевые, а не пустой список: эпизод в этот
+    момент уже закрывается, но кнопку могли нажать и раньше, а подсказка без
+    слов бессмысленна.
+    """
+    assessed = await episodes_db.collect_verdicts(session, episode_id=episode.id)
+    pending = set(rules.unused_words(episode.target_word_ids, assessed))
+    words = await _words_of(session, episode)
+    return [word for word in words if word.word_id in pending] or words
+
+
 async def answer(
     session: AsyncSession,
     llm: LlmClient,
@@ -572,4 +588,5 @@ __all__ = [
     "prepare",
     "settle",
     "start",
+    "words_to_practise",
 ]

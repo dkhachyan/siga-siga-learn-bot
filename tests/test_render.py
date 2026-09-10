@@ -9,9 +9,11 @@ import pytest
 from siga.bot.render import (
     MESSAGE_LIMIT,
     Card,
+    Hint,
     WordLine,
     active_pack_screen,
     gap_form,
+    hint_block,
     pack_screen,
     pack_title,
     plural_ru,
@@ -67,6 +69,35 @@ def test_plural_ru_is_not_hardcoded_to_words() -> None:
 )
 def test_gap_form_reads_like_speech_not_like_a_timer(minutes: int, expected: str) -> None:
     assert gap_form(minutes) == expected
+
+
+def test_hint_block_numbers_the_options_and_bolds_the_words() -> None:
+    text = hint_block(
+        [
+            Hint(ru="Скажи, что пьёшь кофе", words=["ο καφές"]),
+            Hint(ru="Спроси про воду", words=["το νερό", "ο καφές"]),
+        ]
+    )
+
+    assert "1. Скажи, что пьёшь кофе — <b>ο καφές</b>" in text
+    assert "2. Спроси про воду — <b>το νερό</b> · <b>ο καφές</b>" in text
+    assert "собери её по-гречески сам" in text
+
+
+def test_hint_block_survives_an_option_without_words() -> None:
+    """Модель забыла номер слова — вариант всё равно годный."""
+    text = hint_block([Hint(ru="Спроси, что пьёт он сам")])
+
+    assert "1. Спроси, что пьёт он сам" in text
+    assert "—" not in text.split("\n")[2], "тире без слова висело бы в пустоте"
+
+
+def test_hint_block_escapes_what_the_model_wrote() -> None:
+    """Сообщения уходят при `ParseMode.HTML`: одна `<` отвергает их целиком."""
+    text = hint_block([Hint(ru="Скажи <это>", words=["<b>"])])
+
+    assert "&lt;это&gt;" in text
+    assert "<b>&lt;b&gt;</b>" in text
 
 
 def test_pack_title_uses_genitive_month() -> None:

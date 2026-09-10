@@ -146,6 +146,27 @@ async def save_translation(session: AsyncSession, *, turn: Turn, ru: str) -> str
     return stored
 
 
+async def save_hint(session: AsyncSession, *, turn: Turn, text: str) -> str:
+    """Запомнить подсказку к ходу — тем же условным `UPDATE`, что и перевод.
+
+    Довод тот же (см. `save_translation`), но здесь он весомее: подсказку
+    нажимают, когда не знают, что сказать, а в этот момент как раз и жмут
+    дважды от нетерпения.
+    """
+    result = await session.execute(
+        update(Turn)
+        .where(Turn.id == turn.id, Turn.hint_ru.is_(None))
+        .values(hint_ru=text)
+        .returning(Turn.hint_ru)
+    )
+    stored = result.scalar_one_or_none()
+    if stored is None:
+        stored = await session.scalar(select(Turn.hint_ru).where(Turn.id == turn.id)) or text
+    await session.commit()
+    turn.hint_ru = stored
+    return stored
+
+
 async def last_turn(session: AsyncSession, *, episode_id: int) -> Turn | None:
     turn: Turn | None = await session.scalar(
         select(Turn).where(Turn.episode_id == episode_id).order_by(Turn.idx.desc())

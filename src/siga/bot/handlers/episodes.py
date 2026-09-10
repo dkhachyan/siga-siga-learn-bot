@@ -26,9 +26,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from siga import dialog
 from siga.bot import keyboards, render, texts
 from siga.core import srs
+from siga.core.enums import Level
 from siga.db import episodes as episodes_db
 from siga.db import packs, users
 from siga.db.models import Episode, Turn, User
+from siga.llm import hint as hint_llm
 from siga.llm import translate as translate_llm
 from siga.llm.base import LlmClient, LlmError
 
@@ -190,7 +192,17 @@ async def handle_answer(message: Message, session: AsyncSession, llm: LlmClient,
         raise SkipHandler
 
     if _is_meaningless(message.text):
-        await message.answer(texts.ANSWER_UNCLEAR, reply_markup=keyboards.reply_actions())
+        # Кнопки адресуем текущим ходом, а не оставляем без адреса: «не
+        # разобрал ответа» — это ровно тот момент, когда человек не знает, что
+        # сказать, и подсказка ему нужнее всего.
+        current = await episodes_db.last_turn(session, episode_id=episode.id)
+        await message.answer(
+            texts.ANSWER_UNCLEAR,
+            reply_markup=keyboards.reply_actions(
+                episode_id=episode.id,
+                turn_idx=current.idx if current is not None else None,
+            ),
+        )
         return
 
     await _run_turn(
@@ -419,6 +431,117 @@ async def handle_translate(
         # Нажатие просрочено, окна уже не будет. Перевод всё равно нужен.
         if isinstance(callback.message, Message):
             await callback.message.answer(render.plain(ru))
+
+
+# --- подсказка «что ответить» -------------------------------------------------
+
+#: Сколько ждём подсказку. Потолок свой, а не `llm_timeout_s` с ретраями:
+#: человек застрял на вопросе и ждёт ответа сейчас, а не через две минуты —
+#: столько он молча смотрит в экран и решает, что бот сломался.
+HINT_TIMEOUT_S = 12.0
+
+
+async def _hint(
+    session: AsyncSession, llm: LlmClient, *, episode: Episode, turn: Turn, user: User
+) -> str | None:
+    """Подсказка к реплике — из кэша или у модели. `None` — не получилось.
+
+    Готовым текстом сообщения: разбирать кэш обратно на варианты незачем, а
+    собрать его надо один раз.
+    """
+    if turn.hint_ru:
+        return turn.hint_ru
+
+    words = await dialog.words_to_practise(session, episode)
+    if not words:
+        # Слова удалили вместе с пачкой посреди разговора: подсказывать нечем,
+        # а звать модель с пустым списком — платить за пустоту.
+        return None
+
+    # Реплика хода `N` прозвучала после ответа человека в ходе `N-1` — тот же
+    # довод, что и у перевода: без него ломаются рекасты и эллипсисы.
+    previous = (
+        await episodes_db.get_turn(session, episode_id=episode.id, idx=turn.idx - 1)
+        if turn.idx
+        else None
+    )
+
+    try:
+        async with asyncio.timeout(HINT_TIMEOUT_S):
+            result = await hint_llm.suggest(
+                llm,
+                question=turn.bot_text,
+                words=words,
+                level=Level(user.level),
+                scene=episode.scene or "",
+                user_text=previous.user_text if previous is not None else None,
+            )
+    except (LlmError, TimeoutError) as error:
+        log.warning("R7: подсказка к ходу %s не удалась (%s)", turn.id, error)
+        return None
+
+    if not result.options:
+        # Пустое в `hint_ru` не пишем: `NULL` там значит «не спрашивали», и
+        # кнопка должна остаться работающей.
+        return None
+
+    lemmas = await packs.lemmas(session, word_ids=episode.target_word_ids)
+    text = render.hint_block(
+        [
+            render.Hint(
+                ru=option.ru,
+                words=[lemmas[word_id] for word_id in option.word_ids if word_id in lemmas],
+            )
+            for option in result.options
+        ]
+    )
+    return await episodes_db.save_hint(session, turn=turn, text=text)
+
+
+@router.callback_query(keyboards.HintAction.filter())
+async def handle_hint(
+    callback: CallbackQuery,
+    callback_data: keyboards.HintAction,
+    session: AsyncSession,
+    llm: LlmClient,
+    bot: Bot,
+) -> None:
+    """`💡 Что ответить` — 2–3 варианта по-русски (FR-CHK-8).
+
+    Сообщением, а не окном: подсказку читают, пока набирают ответ, — а окно
+    исчезает от первого касания клавиатуры. Нажатие поэтому закрываем сразу,
+    не дожидаясь модели: спиннер всё равно ничего не покажет.
+    """
+    if callback.from_user is None or not isinstance(callback.message, Message):
+        await callback.answer()
+        return
+
+    user = await _current_user(session, callback.from_user.id)
+    episode = await session.get(Episode, callback_data.episode_id)
+    if episode is None or episode.user_id != user.id:
+        # Данные кнопки подделываются, а чужой разговор отдавать нельзя.
+        await callback.answer(texts.NO_EPISODE, show_alert=True)
+        return
+
+    turn = await episodes_db.get_turn(session, episode_id=episode.id, idx=callback_data.turn_idx)
+    if turn is None:
+        # То самое окно NFR-1: сообщение отправлено, а процесс умер до записи
+        # хода. Кнопка в переписке есть, подсказывать нечему.
+        await callback.answer(texts.HINT_NO_TURN, show_alert=True)
+        return
+
+    if turn.user_text is not None and not turn.hint_ru:
+        # Кнопка из истории: на этот вопрос уже ответили, и разговор ушёл
+        # вперёд. Кэш бы показали, а вот платить за подсказку в прошлое незачем.
+        await callback.answer()
+        await callback.message.answer(texts.HINT_ANSWERED)
+        return
+
+    await callback.answer()
+    async with ChatActionSender.typing(bot=bot, chat_id=callback.message.chat.id):
+        text = await _hint(session, llm, episode=episode, turn=turn, user=user)
+
+    await callback.message.answer(text if text is not None else texts.HINT_FAILED)
 
 
 __all__ = ["router"]

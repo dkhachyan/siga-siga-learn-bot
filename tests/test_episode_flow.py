@@ -120,7 +120,8 @@ async def test_next_opens_an_episode(telegram: FakeTelegram, use_llm: UseLlm, db
 
     assert "Καλημέρα! Τι πίνεις το πρωί;" in answers[-1]
     assert telegram.find_button("🔍") is not None, "разбор доступен во время эпизода (FR-CHK-2)"
-    assert telegram.find_button("🤷") is not None
+    assert telegram.find_button("💡") is not None, "подсказка под вопросом (FR-CHK-8)"
+    assert telegram.find_button("🇷🇺") is not None
 
     async with db() as session:
         episode = await session.scalar(select(Episode))
@@ -196,13 +197,20 @@ async def test_a_meaningless_answer_never_reaches_the_model(
     assert "пару слов" in answers[-1]
 
 
-async def test_dunno_is_an_ordinary_turn(
+async def test_an_old_dunno_button_still_works(
     telegram: FakeTelegram, use_llm: UseLlm, db: Sessions
 ) -> None:
+    """`🤷 Не знаю` больше не рисуется — её место заняла подсказка (FR-CHK-8).
+
+    Но кнопки живут в переписке вечно, и нажатая в прошлогоднем разговоре она
+    обязана остаться обычным ходом, а не молчащим кружком: убрать вместе с
+    кнопкой ещё и обработчик — ровно та поломка, что была у `/settings`.
+    """
     await with_pack(telegram, use_llm, FRAMES, turn(reply="Πίνω καφέ κι εγώ."))
     await telegram.send("/next")
 
-    answers = await telegram.press("🤷")
+    assert telegram.find_button("🤷") is None, "новая клавиатура её не предлагает"
+    answers = await telegram.click(keyboards.EpisodeAction(action="dunno").pack())
 
     assert answers[-1] == "Πίνω καφέ κι εγώ."
     async with db() as session:
@@ -473,10 +481,15 @@ async def test_someone_elses_episode_is_not_translated(
     assert "разговора" in (alert.text or "")
 
 
-async def test_the_bots_own_messages_have_nothing_to_translate(
+async def test_an_unclear_answer_keeps_the_buttons_of_the_question(
     telegram: FakeTelegram, use_llm: UseLlm
 ) -> None:
-    """Под «не разобрал ответа» кнопки перевода нет: это уже по-русски."""
+    """«Не разобрал ответа» — момент, когда подсказка нужнее всего.
+
+    Раньше кнопки тут шли без адреса, и под этим сообщением оставался один
+    разбор. Адресуем текущим ходом: человек, набравший «...», как раз и не
+    знает, что сказать.
+    """
     await with_pack(telegram, use_llm, FRAMES)
     await telegram.send("/next")
 
@@ -485,7 +498,7 @@ async def test_the_bots_own_messages_have_nothing_to_translate(
     markup = telegram.last_keyboard
     assert markup is not None
     labels = [button.text for row in markup.inline_keyboard for button in row]
-    assert labels == ["🔍 Разбор", "🤷 Не знаю"]
+    assert labels == ["🔍 Разбор", "💡 Что ответить", "🇷🇺 Перевод"]
 
 
 async def test_the_farewell_has_no_translate_button(
@@ -516,3 +529,155 @@ async def test_the_farewell_has_no_translate_button(
     ]
     labels = [button.text for markup in markups for row in markup.inline_keyboard for button in row]
     assert labels == ["🔍 Разбор"], "под прощанием и итогом переводить нечего"
+
+
+# --- подсказка «что ответить» -------------------------------------------------
+
+
+def hint(*options: tuple[str, list[int]]) -> str:
+    """Ответ `R7` по сценарию."""
+    return json.dumps(
+        {"options": [{"ru": ru, "word_ids": ids} for ru, ids in options]}, ensure_ascii=False
+    )
+
+
+HINT_TWO = hint(
+    ("Скажи, что пьёшь кофе каждое утро", [KAFES]),
+    ("Ответь, что предпочитаешь воду", [NERO]),
+)
+
+
+async def test_the_hint_arrives_as_a_message_with_its_words(
+    telegram: FakeTelegram, use_llm: UseLlm, db: Sessions
+) -> None:
+    """FR-CHK-8: варианты читают, пока набирают ответ, — окно тут не годится."""
+    client = await with_pack(telegram, use_llm, FRAMES, HINT_TWO)
+    await telegram.send("/next")
+    before = client.calls
+
+    answers = await telegram.press("💡")
+
+    assert client.calls == before + 1
+    assert client.routes[-1] is Route.HINT
+    # Нажатие закрываем пустым ответом — спиннер всё равно ничего не покажет,
+    # а текст подсказки в окно не влезет и исчезнет от касания клавиатуры.
+    alert = telegram.last_alert
+    assert alert is not None and not alert.text, "подсказка идёт сообщением, а не окном"
+
+    text = answers[-1]
+    assert "Скажи, что пьёшь кофе каждое утро" in text
+    assert "Ответь, что предпочитаешь воду" in text
+    assert "<b>ο καφές</b>" in text, "слово рисуем из базы, а не со слов модели"
+    assert "<b>το νερό</b>" in text
+    assert "собери её по-гречески сам" in text, "иначе ответят по-русски"
+
+    async with db() as session:
+        stored = await session.scalar(select(Turn.hint_ru).order_by(Turn.idx))
+    assert stored == text
+
+
+async def test_a_hint_is_not_a_turn(telegram: FakeTelegram, use_llm: UseLlm, db: Sessions) -> None:
+    """Главное обещание: подсказка не тратит ход и не портит зачёт.
+
+    Стань она ходом — съела бы один из четырёх (FR-EP-6), сдвинула бы
+    `turns_left` в промпте `R4` и попала бы в историю эпизода репликой,
+    которой Ник не говорил.
+    """
+    await with_pack(telegram, use_llm, FRAMES, HINT_TWO)
+    await telegram.send("/next")
+
+    await telegram.press("💡")
+
+    async with db() as session:
+        episode = await session.scalar(select(Episode))
+        turns = list(await session.scalars(select(Turn).order_by(Turn.idx)))
+    assert episode is not None
+    assert episode.turns_count == 0, "подсказка ход не открывает"
+    assert len(turns) == 1
+    assert turns[0].user_text is None
+    assert turns[0].assessments == []
+
+
+async def test_the_second_hint_costs_nothing(telegram: FakeTelegram, use_llm: UseLlm) -> None:
+    """Нажимают её как раз от нетерпения — и дважды подряд."""
+    client = await with_pack(telegram, use_llm, FRAMES, HINT_TWO)
+    await telegram.send("/next")
+    first = await telegram.press("💡")
+    after_first = client.calls
+
+    again = await telegram.press("💡")
+
+    assert client.calls == after_first, "второе нажатие идёт в базу, а не в модель"
+    assert again[-1] == first[-1]
+
+
+async def test_a_hint_only_offers_words_that_have_not_sounded_yet(
+    telegram: FakeTelegram, use_llm: UseLlm
+) -> None:
+    """Предлагать сказанное значит гонять человека по кругу (FR-EP-7)."""
+    client = await with_pack(
+        telegram,
+        use_llm,
+        FRAMES,
+        turn(reply="Α, νερό! Και τι άλλο;", assessments=[correct(NERO)]),
+        HINT_TWO,
+    )
+    await telegram.send("/next")
+    await telegram.send("Πίνω νερό.")
+
+    await telegram.press("💡")
+
+    asked = client.asked[-1][1].text
+    assert "το νερό" not in asked, "это слово уже зачтено"
+    assert "ο καφές" in asked
+
+
+async def test_a_silent_model_leaves_the_hint_button_working(
+    telegram: FakeTelegram, use_llm: UseLlm, db: Sessions
+) -> None:
+    """Пустое в `hint_ru` — это «не спрашивали», и кнопка обязана остаться живой."""
+    await with_pack(telegram, use_llm, FRAMES, LlmUnavailable("модель молчит"))
+    await telegram.send("/next")
+
+    answers = await telegram.press("💡")
+
+    assert "не пришла" in answers[-1]
+    async with db() as session:
+        stored = await session.scalar(select(Turn.hint_ru).order_by(Turn.idx))
+    assert stored is None
+
+
+async def test_someone_elses_episode_gets_no_hint(telegram: FakeTelegram, use_llm: UseLlm) -> None:
+    """Данные кнопки видны в клиенте и подставляются руками."""
+    client = await with_pack(telegram, use_llm, FRAMES, HINT_TWO)
+    await telegram.send("/next")
+    before = client.calls
+
+    await telegram.click(
+        keyboards.HintAction(episode_id=1, turn_idx=0).pack(), from_user_id=TG_USER_ID + 1
+    )
+
+    assert client.calls == before, "к модели за чужим разговором не идём"
+    alert = telegram.last_alert
+    assert alert is not None
+    assert "разговора" in (alert.text or "")
+
+
+async def test_an_answered_question_does_not_buy_a_hint(
+    telegram: FakeTelegram, use_llm: UseLlm
+) -> None:
+    """Кнопка из истории: разговор ушёл вперёд, платить за подсказку в прошлое незачем."""
+    client = await with_pack(
+        telegram,
+        use_llm,
+        FRAMES,
+        turn(reply="Α, νερό! Και τι άλλο;", assessments=[correct(NERO)]),
+    )
+    await telegram.send("/next")
+    await telegram.send("Πίνω νερό.")
+    before = client.calls
+
+    answers = await telegram.click(keyboards.HintAction(episode_id=1, turn_idx=0).pack())
+
+    assert client.calls == before
+    assert "уже ответил" in answers[-1]
