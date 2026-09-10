@@ -176,7 +176,14 @@ async def add_word(
 
 
 async def remove_word(session: AsyncSession, *, pack_id: int, word_id: int) -> bool:
-    """Убрать слово из черновика. False, если его там не было."""
+    """Убрать слово из пачки — черновика или активной. False, если его там не было.
+
+    Прогресс слова умирает вместе с ним (`ondelete=CASCADE` у `word_progress`)
+    — намеренно: раз слово убрали, отслеживать его больше нечего, а вернуть
+    пачке взятое с нуля честнее, чем прогресс, которого человек не помнит.
+    История эпизодов при этом цела: там слово лежит номером, и пропавшее
+    просто не попадает в словарь (`packs.lemmas`).
+    """
     word = await session.scalar(select(Word).where(Word.id == word_id, Word.pack_id == pack_id))
     if word is None:
         return False

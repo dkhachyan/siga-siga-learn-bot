@@ -18,16 +18,22 @@ NUMBERS_PER_ROW = 5
 
 
 class PackAction(CallbackData, prefix="pack"):
-    """Кнопки работы с пачкой — экрана подтверждения и замены активной."""
+    """Кнопки работы с пачкой — экрана подтверждения, замены и правки активной."""
 
-    action: Literal["confirm", "edit", "delete", "add", "back", "replace", "keep"]
-    """`replace` — убрать активную пачку в архив и начать новую, `keep` — отказаться."""
+    action: Literal["confirm", "edit", "delete", "add", "back", "replace", "keep", "drop"]
+    """`replace` — убрать активную пачку в архив и начать новую, `keep` —
+    отказаться, `drop` — убрать одно слово из активной пачки."""
 
 
 class WordAction(CallbackData, prefix="word"):
     """Выбор конкретного слова номером."""
 
-    action: Literal["edit", "delete"]
+    action: Literal["edit", "delete", "drop", "drop_yes", "drop_no"]
+    """`edit`/`delete` живут на черновике, `drop*` — в активной пачке.
+
+    Значения из `Literal` не убираются никогда: кнопки в переписке живут
+    вечно, и payload вида `word:delete:12` должен распаковываться и через год.
+    Убрать значение — значит молча обездвижить все старые кнопки."""
     word_id: int
 
 
@@ -185,9 +191,14 @@ def after_episode(episode_id: int) -> InlineKeyboardMarkup:
 
 
 def active_pack_screen() -> InlineKeyboardMarkup:
-    """Кнопки под списком активной пачки. Правки тут нет: пачка уже в работе."""
+    """Кнопки под списком активной пачки.
+
+    Правки перевода тут нет — правится он на черновике, — но слово человек
+    убрать должен всегда: перегрузил пачку, слово понял, что уже знает.
+    """
     builder = InlineKeyboardBuilder()
     builder.button(text="🃏 Карточки", callback_data=CardAction(action="open", index=0))
+    builder.button(text="🗑 Убрать слово", callback_data=PackAction(action="drop").pack())
     return builder.as_markup()
 
 
@@ -235,20 +246,44 @@ def pack_screen() -> InlineKeyboardMarkup:
 
 
 def word_numbers(
-    word_ids: Sequence[int], action: Literal["edit", "delete"]
+    word_ids: Sequence[int],
+    action: Literal["edit", "delete", "drop"],
+    *,
+    back_to_list: bool = False,
 ) -> InlineKeyboardMarkup:
     """Кнопки-номера по числу слов в пачке плюс возврат.
 
     Номер, а не само слово: греческое слово на кнопке не помещается, а номер
     совпадает с тем, что человек видит в списке.
+
+    `back_to_list` — куда ведёт «Назад»: у черновика это экран подтверждения,
+    у выбора в активной пачке — свежий список пачки, который рисуется заново.
     """
     builder = InlineKeyboardBuilder()
     for index, word_id in enumerate(word_ids, start=1):
         builder.button(text=str(index), callback_data=WordAction(action=action, word_id=word_id))
     builder.adjust(*([NUMBERS_PER_ROW] * (len(word_ids) // NUMBERS_PER_ROW + 1)))
-    builder.row(
-        InlineKeyboardButton(text="← Назад", callback_data=PackAction(action="back").pack())
-    )
+    if back_to_list:
+        builder.row(
+            InlineKeyboardButton(text="← Назад", callback_data=CardAction(action="list").pack())
+        )
+    else:
+        builder.row(
+            InlineKeyboardButton(text="← Назад", callback_data=PackAction(action="back").pack())
+        )
+    return builder.as_markup()
+
+
+def confirm_drop(word_id: int) -> InlineKeyboardMarkup:
+    """Переспрос перед удалением слова из активной пачки.
+
+    Удаление необратимо и сжигает прогресс слова, так что одного нажатия по
+    номеру мало — тот же довод, что у `replace_pack`.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🗑 Убрать", callback_data=WordAction(action="drop_yes", word_id=word_id))
+    builder.button(text="↩︎ Отмена", callback_data=WordAction(action="drop_no", word_id=word_id))
+    builder.adjust(1)
     return builder.as_markup()
 
 

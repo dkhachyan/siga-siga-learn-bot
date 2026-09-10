@@ -172,6 +172,23 @@ async def test_remove_word_only_from_its_own_pack(session: AsyncSession) -> None
     assert len(await packs.list_words(session, pack_id=pack.id)) == 9
 
 
+async def test_removing_a_word_from_the_active_pack_takes_its_progress(
+    session: AsyncSession,
+) -> None:
+    """FR-IMP-11: убранное слово не тащит за собой сироту-прогресс."""
+    user_id = await _user(session)
+    pack = await _draft(session, user_id, "το νερό — вода\nο καφές — кофе")
+    await packs.activate(session, pack=pack, period_days=14, now=dt.datetime.now(dt.UTC))
+    assert len(list(await session.scalars(select(WordProgress)))) == 2
+
+    word = (await packs.list_words(session, pack_id=pack.id))[0]
+    assert await packs.remove_word(session, pack_id=pack.id, word_id=word.id) is True
+
+    assert await session.get(Word, word.id) is None
+    assert await session.get(WordProgress, word.id) is None, "прогресс не переживает слово"
+    assert len(await packs.list_words(session, pack_id=pack.id)) == 1
+
+
 async def test_set_translation_replaces_only_the_translation(session: AsyncSession) -> None:
     user_id = await _user(session)
     pack = await _draft(session, user_id)
