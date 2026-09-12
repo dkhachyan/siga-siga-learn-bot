@@ -104,6 +104,24 @@ class HintAction(CallbackData, prefix="hi"):
     turn_idx: int
 
 
+class TopicAction(CallbackData, prefix="tpc"):
+    """Кнопка готовой темы разговора (FR-EP-9).
+
+    У темы не своё поле, а отдельный префикс по тому же доводу, что и выше:
+    payload кнопки живёт в переписке вечно, и вырастить существующий класс
+    значит ослепить все старые кнопки.
+    """
+
+    action: Literal["preset"]
+    index: int
+    """Номер темы в общем списке всех уровней, а не в списке уровня кнопки.
+
+    Уровень человек может поменять, а кнопка в переписке останется: если
+    нумеровать темы внутри уровня, старая кнопка после смены уровня укажет
+    на другую тему. Сквозной номер держит подпись и payload навсегда
+    согласованными."""
+
+
 #: Номер хода с вводной репликой. `episodes_db.open_` всегда пишет нулевой ход,
 #: так что для кнопки под приглашением к разговору хватает константы.
 OPENING_TURN_IDX = 0
@@ -495,6 +513,56 @@ def settings_level(current: str) -> InlineKeyboardMarkup:
     builder.row(
         InlineKeyboardButton(text="← Назад", callback_data=SettingsAction(action="menu").pack())
     )
+    return builder.as_markup()
+
+
+#: Популярные темы разговора по уровням (FR-EP-9). Подпись на кнопке — то же
+#: слово, что уедет в рамку `R3`, так что список обязан жить в коде, а не в
+#: переписке: нумерация кнопок сквозная по всем уровням, добавлять и менять
+#: темы можно только в конец (иначе старые кнопки укажут на другие темы).
+TOPIC_PRESETS: dict[str, tuple[str, ...]] = {
+    "A1": ("Знакомство", "Еда и кофе", "Погода", "Семья", "Мой день"),
+    "A2": ("Покупки", "Врач и аптека", "Город и транспорт", "Работа", "Выходные"),
+    "B1": ("Путешествия", "Кино и книги", "Праздники в Греции", "Новости", "Планы на будущее"),
+    "B2": (
+        "Спорные вопросы",
+        "Работа и карьера",
+        "Культура и традиции",
+        "Технологии",
+        "Переезд за границу",
+    ),
+}
+
+#: Темы одним списком: кнопка хранит сквозной номер и поэтому должна
+#: переживать любые изменения уровня её владельца.
+_ALL_TOPICS: tuple[str, ...] = tuple(
+    topic for level_topics in TOPIC_PRESETS.values() for topic in level_topics
+)
+
+
+def topics_for(level: str) -> tuple[tuple[int, str], ...]:
+    """Темы уровня с их сквозными номерами. Неизвестный уровень — без тем."""
+    start = 0
+    for level_key, level_topics in TOPIC_PRESETS.items():
+        if level_key == level:
+            return tuple((start + index, topic) for index, topic in enumerate(level_topics))
+        start += len(level_topics)
+    return ()
+
+
+def topic_preset(index: int) -> str | None:
+    """Тема по сквозному номеру. `None` — кнопка из чужого прошлого."""
+    if 0 <= index < len(_ALL_TOPICS):
+        return _ALL_TOPICS[index]
+    return None
+
+
+def topic_menu(level: str) -> InlineKeyboardMarkup:
+    """Готовые темы уровня под приглашением к разговору."""
+    builder = InlineKeyboardBuilder()
+    for index, topic in topics_for(level):
+        builder.button(text=topic, callback_data=TopicAction(action="preset", index=index))
+    builder.adjust(2)
     return builder.as_markup()
 
 

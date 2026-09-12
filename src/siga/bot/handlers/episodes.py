@@ -140,14 +140,27 @@ async def handle_topic(message: Message, session: AsyncSession, llm: LlmClient, 
 
     # Тема — всё после слова команды (в группах она бывает и с хвостом
     # `@бот` — его срезаем). `/topic` без темы не провоцирует угадывание:
-    # неизвестно, о чём болтать, — переспрашиваем.
+    # неизвестно, о чём болтать, — предлагаем темы уровня.
     head, _, rest = (message.text or "").partition(" ")
     topic = rest.strip() if head.split("@")[0] == "/topic" else ""
+    user = await _current_user(session, message.from_user.id)
     if not topic:
-        await message.answer(texts.TOPIC_NEED)
+        await message.answer(texts.TOPIC_MENU, reply_markup=keyboards.topic_menu(user.level))
         return
 
-    user = await _current_user(session, message.from_user.id)
+    await _open_topic(message, session, llm, bot, user=user, topic=topic)
+
+
+async def _open_topic(
+    message: Message,
+    session: AsyncSession,
+    llm: LlmClient,
+    bot: Bot,
+    *,
+    user: User,
+    topic: str,
+) -> None:
+    """Открыть разговор по теме — общий путь для команды и кнопки (FR-EP-9)."""
     now = dt.datetime.now(dt.UTC)
     await _sweep(session, user_id=user.id, now=now)
 
@@ -172,6 +185,29 @@ async def handle_topic(message: Message, session: AsyncSession, llm: LlmClient, 
             hint=False,
         ),
     )
+
+
+@router.callback_query(keyboards.TopicAction.filter(F.action == "preset"))
+async def handle_topic_preset(
+    callback: CallbackQuery,
+    callback_data: keyboards.TopicAction,
+    session: AsyncSession,
+    llm: LlmClient,
+    bot: Bot,
+) -> None:
+    """Тема с кнопки — тот же разговор, что и `/topic <тема>`."""
+    if not isinstance(callback.message, Message):
+        return
+
+    topic = keyboards.topic_preset(callback_data.index)
+    if topic is None:
+        # Кнопка из чужого прошлого: список тем менялся, и её номер потерялся.
+        await callback.answer(texts.TOPIC_MISSING, show_alert=True)
+        return
+    await callback.answer()
+
+    user = await _current_user(session, callback.from_user.id)
+    await _open_topic(callback.message, session, llm, bot, user=user, topic=topic)
 
 
 # --- ход ----------------------------------------------------------------------

@@ -712,9 +712,55 @@ async def test_topic_opens_a_talk_without_a_pack(
         assert episode.target_word_ids == []
 
 
-async def test_a_topic_without_a_theme_is_not_guessed(telegram: FakeTelegram) -> None:
+async def test_a_topic_without_a_theme_offers_the_level_menu(telegram: FakeTelegram) -> None:
+    """Темы предлагаются уровнем: у A1 — его список, а не все подряд."""
     answers = await telegram.send("/topic")
     assert "О чём болтаем?" in answers[-1]
+    assert telegram.find_button("Еда и кофе") is not None, "тема уровня A1 по умолчанию"
+    assert telegram.find_button("Покупки") is None, "темы чужого уровня не подсовываем"
+
+
+async def test_a_topic_preset_opens_the_talk(
+    telegram: FakeTelegram, use_llm: UseLlm, db: Sessions
+) -> None:
+    client = ScriptedClient(FRAMES)
+    use_llm(client)
+
+    await telegram.send("/topic")
+    answers = await telegram.click(keyboards.TopicAction(action="preset", index=1).pack())
+
+    assert "Καλημέρα! Τι πίνεις το πρωί;" in answers[-1]
+    prompt = "\n".join(message.text or "" for message in client.asked[0])
+    assert "Еда и кофе" in prompt, "тема с кнопки уезжает в рамку"
+
+    async with db() as session:
+        episode = await session.scalar(select(Episode))
+        assert episode is not None
+        assert episode.target_word_ids == []
+
+
+async def test_a_stale_topic_preset_is_refused(telegram: FakeTelegram, use_llm: UseLlm) -> None:
+    client = ScriptedClient(FRAMES)
+    use_llm(client)
+
+    await telegram.click(keyboards.TopicAction(action="preset", index=999).pack())
+
+    assert client.calls == 0, "несуществующую тему к модели не несём"
+    alert = telegram.last_alert
+    assert alert is not None and "уже нет" in (alert.text or "")
+
+
+async def test_a_topic_preset_waits_for_the_running_talk(
+    telegram: FakeTelegram, use_llm: UseLlm
+) -> None:
+    """Кнопка из старой переписки не открывает второй разговор."""
+    client = await with_pack(telegram, use_llm, FRAMES)
+    await telegram.send("/next")
+    before = client.calls
+
+    await telegram.click(keyboards.TopicAction(action="preset", index=0).pack())
+
+    assert client.calls == before, "к модели не идём — разговор уже идёт"
 
 
 async def test_a_topic_waits_for_the_running_talk(telegram: FakeTelegram, use_llm: UseLlm) -> None:
