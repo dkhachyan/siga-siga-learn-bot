@@ -441,6 +441,7 @@ def settings_screen(
     window_start: dt.time,
     window_end: dt.time,
     tz: str,
+    level: str,
     paused: bool,
     fits_per_day: int,
 ) -> str:
@@ -463,6 +464,7 @@ def settings_screen(
         f"Когда писать: <b>{span}</b>",
         f"Между разговорами: <b>не меньше {gap_form(min_gap_minutes)}</b>",
         f"Часовой пояс: <b>{plain(tz)}</b>",
+        f"Уровень греческого: <b>{plain(level)}</b>",
     ]
     if fits_per_day < episodes_per_day:
         lines += [

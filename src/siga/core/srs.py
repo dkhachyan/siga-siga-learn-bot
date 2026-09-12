@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import random
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 
@@ -125,19 +126,44 @@ class Candidate:
     next_due_at: dt.datetime | None = None
 
 
-def _priority(candidate: Candidate, now: dt.datetime) -> tuple[int, float, int]:
-    """Ключ сортировки по FR-SRS-4: просроченные → новые → ближайшие по времени.
+def _rank(candidate: Candidate, now: dt.datetime) -> tuple[int, float]:
+    """Группа приоритета и ключ внутри неё, FR-SRS-4.
 
-    Внутри просроченных — сначала те, что ждут дольше: иначе слово, которое
-    человек однажды пропустил, может так и не всплыть никогда.
+    Просроченные → новые → ближайшие по времени. Внутри просроченных —
+    сначала те, что ждут дольше: иначе слово, которое человек однажды
+    пропустил, может так и не всплыть никогда. Тай-брейка по `word_id` тут
+    нарочно нет: он делал выборку строго по порядку пачки, а у равных слов
+    порядка быть не должно (см. `select`).
     """
     if candidate.next_due_at is None:
-        return (1, 0.0, candidate.word_id)
+        return (1, 0.0)
     delay = (candidate.next_due_at - now).total_seconds()
-    group = 0 if delay <= 0 else 2
-    return (group, delay, candidate.word_id)
+    return (0 if delay <= 0 else 2, delay)
 
 
-def select(candidates: Sequence[Candidate], *, now: dt.datetime, limit: int) -> list[Candidate]:
-    """Отобрать слова для эпизода в порядке приоритета."""
-    return sorted(candidates, key=lambda item: _priority(item, now))[:limit]
+def select(
+    candidates: Sequence[Candidate],
+    *,
+    now: dt.datetime,
+    limit: int,
+    rng: random.Random | None = None,
+) -> list[Candidate]:
+    """Отобрать слова для эпизода в порядке приоритета.
+
+    Слова одного ранга между собой равны, и без перемешивания они выходили
+    бы строго по порядку пачки: каждый разговор — про одни и те же первые
+    слова, сколько бы их ни было. `rng` перемешивает равные между собой
+    слова; без него порядок детерминированный — так живут тесты, и тай-брейк
+    остаётся прежним (стабильная сортировка хранит входной порядок пачки).
+    """
+    ordered = sorted(candidates, key=lambda item: (_rank(item, now), item.word_id))
+    if rng is not None:
+        start = 0
+        for index in range(1, len(ordered) + 1):
+            if index == len(ordered) or _rank(ordered[index], now) != _rank(ordered[start], now):
+                if index - start > 1:
+                    peers = ordered[start:index]
+                    rng.shuffle(peers)
+                    ordered[start:index] = peers
+                start = index
+    return ordered[:limit]

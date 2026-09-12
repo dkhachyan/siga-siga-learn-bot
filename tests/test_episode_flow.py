@@ -127,7 +127,8 @@ async def test_next_opens_an_episode(telegram: FakeTelegram, use_llm: UseLlm, db
         episode = await session.scalar(select(Episode))
         assert episode is not None
         assert episode.status == EpisodeStatus.OPEN
-        assert episode.target_word_ids == [NERO, KAFES, GALA]
+        # Порядок перемешивается (равные слова), так что сверяем составом.
+        assert set(episode.target_word_ids) == {NERO, KAFES, GALA}
         assert episode.frame["scene"] == "утро, кухня"
         assert "opening" not in episode.frame, "реплика хранится отдельно от рамки"
 

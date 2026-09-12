@@ -307,10 +307,12 @@ class SettingsAction(CallbackData, prefix="cfg"):
         "window",
         "gap",
         "tz",
+        "level",
         "set_freq",
         "set_window",
         "set_gap",
         "set_tz",
+        "set_level",
         "pause",
         "resume",
     ]
@@ -360,6 +362,7 @@ def settings_menu(*, paused: bool) -> InlineKeyboardMarkup:
         text="⏱ Промежуток между разговорами", callback_data=SettingsAction(action="gap")
     )
     builder.button(text="🌍 Часовой пояс", callback_data=SettingsAction(action="tz"))
+    builder.button(text="🎓 Уровень греческого", callback_data=SettingsAction(action="level"))
     if paused:
         builder.button(text="▶️ Продолжить", callback_data=SettingsAction(action="resume"))
     else:
@@ -451,6 +454,38 @@ def settings_window(current: str) -> InlineKeyboardMarkup:
     builder.button(
         text="✏️ Своё окно", callback_data=SettingsAction(action="set_window", value="custom")
     )
+    builder.adjust(1)
+    builder.row(
+        InlineKeyboardButton(text="← Назад", callback_data=SettingsAction(action="menu").pack())
+    )
+    return builder.as_markup()
+
+
+#: Уровни греческого с человеческой подписью. Значение — сам уровень: двоеточий
+#: не содержит, а значит пакуется (см. `SettingsAction`), и лишнего разбора
+#: «номер → уровень» не нужно.
+LEVEL_PRESETS: tuple[tuple[str, str], ...] = (
+    ("A1 — начинаю с нуля", "A1"),
+    ("A2 — простые фразы", "A2"),
+    ("B1 — говорю по-своему", "B1"),
+    ("B2 — почти всё понимаю", "B2"),
+)
+
+
+def level_preset(value: str) -> str | None:
+    """Уровень по строке кнопки. `None` — значение подделано."""
+    if value not in {preset[1] for preset in LEVEL_PRESETS}:
+        return None
+    return value
+
+
+def settings_level(current: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for title, level in LEVEL_PRESETS:
+        mark = "· " if level == current else ""
+        builder.button(
+            text=f"{mark}{title}", callback_data=SettingsAction(action="set_level", value=level)
+        )
     builder.adjust(1)
     builder.row(
         InlineKeyboardButton(text="← Назад", callback_data=SettingsAction(action="menu").pack())

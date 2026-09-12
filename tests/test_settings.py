@@ -37,6 +37,7 @@ def screens() -> list[InlineKeyboardMarkup]:
         keyboards.settings_window("10:00-20:00"),
         keyboards.settings_gap(clock.MIN_GAP_MINUTES),
         keyboards.settings_timezone("Asia/Nicosia"),
+        keyboards.settings_level("A1"),
     ]
 
 
@@ -177,6 +178,40 @@ async def test_a_gap_button_reaches_the_database(
     assert (await user_now(engine)).min_gap_minutes == 120
 
 
+async def test_a_level_button_reaches_the_database(
+    telegram: FakeTelegram, engine: AsyncEngine
+) -> None:
+    """Уровень едет в промпты уже сейчас — править его надо не руками в базе."""
+    await telegram.send("/settings")
+    await telegram.press("🎓")
+    await telegram.press("B1 — говорю по-своему")
+
+    assert (await user_now(engine)).level == "B1"
+
+
+async def test_the_current_level_is_marked_on_the_screen(telegram: FakeTelegram) -> None:
+    """Помечен один уровень — иначе непонятно, что менять."""
+    await telegram.send("/settings")
+    await telegram.press("🎓")
+
+    assert "Насколько сложным" in telegram.edits[-1]
+    screen = telegram.last_keyboard
+    assert screen is not None
+    marked = [
+        button.text
+        for row in screen.inline_keyboard
+        for button in row
+        if button.text.startswith("· ")
+    ]
+    assert marked == ["· A1 — начинаю с нуля"]
+
+
+async def test_the_screen_shows_the_level(telegram: FakeTelegram) -> None:
+    answers = await telegram.send("/settings")
+
+    assert "Уровень греческого" in answers[-1]
+
+
 async def test_a_custom_gap_is_typed_in(telegram: FakeTelegram, engine: AsyncEngine) -> None:
     await telegram.send("/settings")
     await telegram.press("⏱")
@@ -233,9 +268,11 @@ async def test_forged_values_change_nothing(telegram: FakeTelegram, engine: Asyn
         "cfg:set_window:99",
         "cfg:set_gap:99",
         "cfg:set_tz:Europe/Lisboa",
+        "cfg:set_level:C1",
     ):
         await telegram.click(data)
 
     user = await user_now(engine)
     assert (user.episodes_per_day, user.tz, user.min_gap_minutes) == (4, "Asia/Nicosia", 45)
     assert (user.window_start, user.window_end) == (dt.time(10, 0), dt.time(20, 0))
+    assert user.level == "A1"

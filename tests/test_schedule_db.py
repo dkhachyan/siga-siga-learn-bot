@@ -131,6 +131,18 @@ async def test_every_conversation_of_the_day_gets_its_own_words(session: AsyncSe
             assert not group & other
 
 
+async def test_the_day_is_not_walked_through_in_pack_order(session: AsyncSession) -> None:
+    """Все новые слова между собой равны, и хранить их очередь по номерам —
+    значит кормить одними и теми же первыми словами каждый день подряд."""
+    user, _ = await _person(session)
+
+    plan, _ = await _plan(session, user)
+
+    order = [word_id for episode in plan.episodes for word_id in episode.target_word_ids]
+    assert sorted(order) == list(range(1, 10)), "ни одно слово дня не потерялось"
+    assert order != [1, 2, 3, 4, 5, 6, 7, 8, 9], "порядок перемешан, а не по номерам"
+
+
 async def test_a_day_without_words_is_not_planned(session: AsyncSession) -> None:
     """Пачки нет — расписывать нечего, и модель не зовём."""
     user, _ = await users.get_or_create(session, tg_user_id=778)

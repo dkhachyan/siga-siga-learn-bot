@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import random
 
 from aiogram import Bot, F, Router
 from aiogram.dispatcher.event.bases import SkipHandler
@@ -107,7 +108,7 @@ async def handle_next(message: Message, session: AsyncSession, llm: LlmClient, b
 
     try:
         async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
-            started = await dialog.start(session, llm, user=user, now=now)
+            started = await dialog.start(session, llm, user=user, now=now, rng=random.Random())
     except dialog.NoWordsToPractise as empty:
         await message.answer(
             texts.NO_WORDS_ALL_LEARNED if empty.has_pack else texts.NO_WORDS_NO_PACK

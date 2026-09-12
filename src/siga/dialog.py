@@ -92,6 +92,7 @@ async def start(
     user: User,
     now: dt.datetime,
     persona: Persona | None = None,
+    rng: random.Random | None = None,
 ) -> Started:
     """Отобрать слова, придумать рамку и открыть эпизод.
 
@@ -104,7 +105,9 @@ async def start(
     if pack is None:
         raise NoWordsToPractise(has_pack=False)
 
-    picked = await progress_db.pick(session, pack_id=pack.id, now=now, limit=rules.MAX_TARGET_WORDS)
+    picked = await progress_db.pick(
+        session, pack_id=pack.id, now=now, limit=rules.MAX_TARGET_WORDS, rng=rng
+    )
     if not picked:
         raise NoWordsToPractise(has_pack=True)
 
@@ -183,6 +186,10 @@ async def plan_day(
 
     tz = clock.zone(user.tz)
     _, closes = clock.window_bounds(day, tz=tz, start=user.window_start, end=user.window_end)
+    # Свой генератор и для слов, и для слотов: вызвавший может дать seeded
+    # `Random` ради теста, а без него — честная случайность, потому что день
+    # из одинаковых разговоров в одном и том же порядке читается как будильник.
+    rng = rng or random.Random()
     groups = await progress_db.pick_groups(
         session,
         pack_id=pack.id,
@@ -190,6 +197,7 @@ async def plan_day(
         until=closes,
         groups=clock.clamp_episodes_per_day(user.episodes_per_day),
         size=rules.MAX_TARGET_WORDS,
+        rng=rng,
     )
     if not groups:
         log.info("пользователю %s на %s нечего повторять", user.id, day)

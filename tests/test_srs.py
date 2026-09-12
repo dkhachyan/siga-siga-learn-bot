@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import random
 
 import pytest
 
@@ -156,3 +157,41 @@ class TestSelection:
 
     def test_an_empty_pool_is_not_an_error(self) -> None:
         assert srs.select([], now=NOW, limit=3) == []
+
+    def test_without_an_rng_equal_words_keep_their_order(self) -> None:
+        """Детерминированный режим для тестов: пачка выходит как лежала."""
+        candidates = [srs.Candidate(word_id=index) for index in range(1, 6)]
+
+        chosen = srs.select(candidates, now=NOW, limit=5)
+
+        assert [item.word_id for item in chosen] == [1, 2, 3, 4, 5]
+
+    def test_an_rng_shuffles_words_of_equal_rank(self) -> None:
+        """Новые слова между собой равны — строго по порядку пачки им ходить нечего."""
+        candidates = [srs.Candidate(word_id=index) for index in range(1, 6)]
+
+        chosen = srs.select(candidates, now=NOW, limit=5, rng=random.Random(1))
+
+        assert sorted(item.word_id for item in chosen) == [1, 2, 3, 4, 5], "никто не потерян"
+        assert [item.word_id for item in chosen] != [1, 2, 3, 4, 5], "порядок другой"
+
+    def test_the_same_seed_gives_the_same_order(self) -> None:
+        """Случайность проверяемая: seed задаёт раскладку, а не «примерно так»."""
+        candidates = [srs.Candidate(word_id=index) for index in range(1, 6)]
+
+        first = srs.select(candidates, now=NOW, limit=5, rng=random.Random(7))
+        second = srs.select(candidates, now=NOW, limit=5, rng=random.Random(7))
+
+        assert first == second
+
+    def test_an_rng_does_not_mix_words_of_different_ranks(self) -> None:
+        """FR-SRS-4 жив: перемешиваются только равные между собой."""
+        new = [srs.Candidate(word_id=index) for index in range(1, 4)]
+        overdue = srs.Candidate(word_id=4, next_due_at=NOW - dt.timedelta(days=2))
+        later = srs.Candidate(word_id=5, next_due_at=NOW + dt.timedelta(days=2))
+
+        chosen = srs.select([*new, overdue, later], now=NOW, limit=5, rng=random.Random(1))
+
+        assert chosen[0] == overdue, "просроченное — первым при любой случайности"
+        assert chosen[-1] == later, "будущее — после новых"
+        assert sorted(item.word_id for item in chosen[1:-1]) == [1, 2, 3]

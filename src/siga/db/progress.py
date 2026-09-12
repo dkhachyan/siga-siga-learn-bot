@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import random
 from collections.abc import Mapping, Sequence
 
 from sqlalchemy import select
@@ -33,7 +34,12 @@ async def pool(session: AsyncSession, *, pack_id: int) -> list[tuple[Word, WordP
 
 
 async def pick(
-    session: AsyncSession, *, pack_id: int, now: dt.datetime, limit: int
+    session: AsyncSession,
+    *,
+    pack_id: int,
+    now: dt.datetime,
+    limit: int,
+    rng: random.Random | None = None,
 ) -> list[tuple[Word, WordProgress]]:
     """Слова для одного эпизода в порядке приоритета FR-SRS-4.
 
@@ -51,6 +57,7 @@ async def pick(
         ],
         now=now,
         limit=limit,
+        rng=rng,
     )
     return [by_id[candidate.word_id] for candidate in chosen]
 
@@ -63,6 +70,7 @@ async def pick_groups(
     until: dt.datetime,
     groups: int,
     size: int,
+    rng: random.Random | None = None,
 ) -> list[list[tuple[Word, WordProgress]]]:
     """Слова сразу на несколько эпизодов — для плана дня (FR-SCH-2).
 
@@ -96,6 +104,7 @@ async def pick_groups(
         ],
         now=now,
         limit=groups * size,
+        rng=rng,
     )
     return [
         [by_id[candidate.word_id] for candidate in chosen[start : start + size]]

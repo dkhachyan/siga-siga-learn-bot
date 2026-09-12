@@ -61,6 +61,7 @@ def _screen(user: User) -> str:
         window_start=user.window_start,
         window_end=user.window_end,
         tz=user.tz,
+        level=user.level,
         paused=user.paused_at is not None,
         # Считаем той же функцией, что и планировщик: разойдись они, экран
         # обещал бы одно, а разговоров приходило бы другое.
@@ -174,12 +175,25 @@ async def handle_timezone(callback: CallbackQuery, session: AsyncSession) -> Non
     )
 
 
+@router.callback_query(keyboards.SettingsAction.filter(F.action == "level"))
+async def handle_level(callback: CallbackQuery, session: AsyncSession) -> None:
+    if callback.from_user is None or not isinstance(callback.message, Message):
+        await callback.answer()
+        return
+    user = await _current_user(session, callback.from_user.id)
+    await callback.answer()
+    await callback.message.edit_text(
+        texts.SETTINGS_LEVEL, reply_markup=keyboards.settings_level(user.level)
+    )
+
+
 # --- правка -------------------------------------------------------------------
 
 
 #: Кнопки, которые что-то меняют. Открывающие экран (`freq`, `window`, `gap`,
-#: `tz`) сюда не входят: их дело — нарисовать список, а не записать выбор.
-SET_ACTIONS = frozenset({"set_freq", "set_window", "set_gap", "set_tz"})
+#: `tz`, `level`) сюда не входят: их дело — нарисовать список, а не записать
+#: выбор.
+SET_ACTIONS = frozenset({"set_freq", "set_window", "set_gap", "set_tz", "set_level"})
 
 
 @router.callback_query(keyboards.SettingsAction.filter(F.action.in_(SET_ACTIONS)))
@@ -246,6 +260,14 @@ async def handle_set(
             await callback.answer()
             return
         user.min_gap_minutes = clock.clamp_min_gap(minutes)
+    elif action == "set_level":
+        level = keyboards.level_preset(value)
+        if level is None:
+            # Подделанного уровня в перечислении нет, и записывать его нельзя:
+            # строка без CHECK-значения упадёт при коммите молча.
+            await callback.answer()
+            return
+        user.level = level
     else:
         if clock.zone(value).key != value:
             # Тот же довод, что и у набранного руками пояса ниже: `clock.zone`
