@@ -17,6 +17,7 @@ from siga.llm.base import LlmClient
 #: сверху, потому что ради него всё и затевалось.
 BOT_COMMANDS = [
     BotCommand(command="next", description="Начать разговор"),
+    BotCommand(command="topic", description="Поболтать на тему без пачки слов"),
     BotCommand(command="end", description="Закончить разговор"),
     BotCommand(command="add", description="Загрузить пачку слов"),
     BotCommand(command="pack", description="Показать текущую пачку"),
