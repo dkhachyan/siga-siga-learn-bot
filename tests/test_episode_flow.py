@@ -682,3 +682,90 @@ async def test_an_answered_question_does_not_buy_a_hint(
 
     assert client.calls == before
     assert "уже ответил" in answers[-1]
+
+
+# --- разговор по теме (FR-EP-9) -----------------------------------------------
+
+
+async def test_topic_opens_a_talk_without_a_pack(
+    telegram: FakeTelegram, use_llm: UseLlm, db: Sessions
+) -> None:
+    """Пачка не нужна: тема вместо слов, прогресс не трогаем."""
+    client = ScriptedClient(FRAMES)
+    use_llm(client)
+
+    answers = await telegram.send("/topic кухня")
+
+    assert "Καλημέρα! Τι πίνεις το πρωί;" in answers[-1]
+    assert telegram.find_button("🔍") is not None
+    assert telegram.find_button("🇷🇺") is not None
+    assert telegram.find_button("💡") is None, "подсказка строится на словах, а их нет"
+
+    assert client.routes == [Route.FRAMES]
+    prompt = "\n".join(message.text or "" for message in client.asked[0])
+    assert "кухня" in prompt, "тема уезжает в рамку"
+
+    async with db() as session:
+        episode = await session.scalar(select(Episode))
+        assert episode is not None
+        assert episode.pack_id is None
+        assert episode.target_word_ids == []
+
+
+async def test_a_topic_without_a_theme_is_not_guessed(telegram: FakeTelegram) -> None:
+    answers = await telegram.send("/topic")
+    assert "О чём болтаем?" in answers[-1]
+
+
+async def test_a_topic_waits_for_the_running_talk(telegram: FakeTelegram, use_llm: UseLlm) -> None:
+    """Одновременно открыт не более одного эпизода, тема — не исключение."""
+    await with_pack(telegram, use_llm, FRAMES)
+    await telegram.send("/next")
+
+    answers = await telegram.send("/topic кухня")
+    assert "/end" in answers[-1]
+
+
+async def test_a_silent_model_leaves_the_topic_untouched(
+    telegram: FakeTelegram, use_llm: UseLlm, db: Sessions
+) -> None:
+    client = ScriptedClient(LlmUnavailable("таймаут"))
+    use_llm(client)
+
+    answers = await telegram.send("/topic кухня")
+    assert "/topic" in answers[-1], "предлагаем попробовать снова"
+
+    async with db() as session:
+        assert await session.scalar(select(Episode)) is None, "ничего не записано до отправки"
+
+
+async def test_a_topic_talk_closes_without_the_outcomes_block(
+    telegram: FakeTelegram, use_llm: UseLlm, db: Sessions
+) -> None:
+    """«Как прошло» — про целевые слова; без слов и блока быть не должно."""
+    client = ScriptedClient(FRAMES, turn(reply="Ωραία! Καλή συνέχεια!", action="close"))
+    use_llm(client)
+    await telegram.send("/topic кухня")
+
+    answers = await telegram.send("Πόσες ώρες ανοίγει η λαϊκή;")
+    summary = answers[-1]
+    assert "Как прошло" not in summary
+    assert telegram.find_button("🔍") is not None, "разбор остаётся"
+
+    async with db() as session:
+        episode = await session.scalar(select(Episode))
+        assert episode is not None
+        assert episode.status == EpisodeStatus.CLOSED
+
+
+async def test_end_closes_a_topic_talk_the_same_way(
+    telegram: FakeTelegram, use_llm: UseLlm
+) -> None:
+    client = ScriptedClient(FRAMES)
+    use_llm(client)
+    await telegram.send("/topic кухня")
+
+    answers = await telegram.send("/end")
+    assert "Как прошло" not in answers[-1]
+    assert "поболтали" in answers[-1]
+    assert client.calls == 1, "закрытие по просьбе человека модель не зовёт"

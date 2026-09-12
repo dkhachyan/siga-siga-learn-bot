@@ -143,6 +143,51 @@ async def start(
     return Started(episode=episode, opening=episode.opening_text or "")
 
 
+async def start_topic(
+    session: AsyncSession,
+    llm: LlmClient,
+    *,
+    user: User,
+    topic: str,
+    now: dt.datetime,
+) -> Started:
+    """Открыть разговор по теме — без пачки и без слов (FR-EP-9).
+
+    Рамка спрашивается здесь и сейчас, как в `start`. От `start` отличается
+    тем, что слов не отбираем и прогресс не трогаем: пачки может не быть
+    вовсе, а разговор — ради разговорной практики. Тема на один разговор,
+    отдельно её не храним: она уезжает в рамку и остаётся в `episodes.frame`.
+    """
+    profile = await memory_db.load(session, user_id=user.id)
+
+    result = await make_frames(
+        llm,
+        persona=load_persona(),
+        level=Level(user.level),
+        profile=profile,
+        requests=[EpisodeRequest(intent=EpisodeIntent.TOPIC, topic=topic)],
+    )
+    frame = result.frames[0]
+    if not frame.opening.strip():
+        # Как и в `start`: пустая реплика — это отказ модели, честнее
+        # извиниться, чем открыть разговор пустым сообщением.
+        raise LlmBadOutput("R3 не вернул первую реплику")
+
+    episode = await episodes_db.create(
+        session,
+        user_id=user.id,
+        pack_id=None,
+        intent=EpisodeIntent.TOPIC,
+        scene=frame.scene or None,
+        frame=frame.as_frame_json(),
+        opening_text=frame.opening.strip(),
+        target_word_ids=[],
+    )
+    await episodes_db.open_(session, episode=episode, now=now)
+    log.info("эпизод %s открыт: T, тема %r", episode.id, topic)
+    return Started(episode=episode, opening=episode.opening_text or "")
+
+
 @dataclass(frozen=True, slots=True)
 class DayPlan:
     """Что получилось расписать человеку на день."""

@@ -86,3 +86,42 @@ def test_an_unfinished_episode_stays_open() -> None:
 
 def test_words_that_never_came_up_are_reported() -> None:
     assert episodes.unused_words(WORDS, {1: [Verdict.CORRECT]}) == [2, 3]
+
+
+# --- разговор по теме (FR-EP-9) -----------------------------------------------
+
+
+def test_a_topic_episode_survives_an_answer() -> None:
+    """Пустая конъюнкция «все слова оценены» не должна закрывать разговор.
+
+    У тематического эпизода целевых слов нет, и без этой оговорки он
+    закрывался бы после первого же хода: `all([])` — это истина.
+    """
+    assert not episodes.should_close(
+        turns_done=1,
+        target_word_ids=[],
+        assessed=NOTHING_ASSESSED,
+        model_wants_close=False,
+    )
+
+
+def test_a_topic_episode_closes_for_the_same_reasons_as_usual() -> None:
+    assert episodes.should_close(
+        turns_done=episodes.MAX_TURNS,
+        target_word_ids=[],
+        assessed=NOTHING_ASSESSED,
+        model_wants_close=False,
+    ), "лимит ходов работает и без слов"
+    assert episodes.should_close(
+        turns_done=1,
+        target_word_ids=[],
+        assessed=NOTHING_ASSESSED,
+        model_wants_close=True,
+    ), "решение модели тоже"
+    assert episodes.should_close(
+        turns_done=1,
+        target_word_ids=[],
+        assessed=NOTHING_ASSESSED,
+        model_wants_close=False,
+        user_asked=True,
+    ), "и /end"

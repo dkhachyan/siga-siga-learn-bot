@@ -127,6 +127,53 @@ async def handle_next(message: Message, session: AsyncSession, llm: LlmClient, b
     )
 
 
+@router.message(Command("topic"))
+async def handle_topic(message: Message, session: AsyncSession, llm: LlmClient, bot: Bot) -> None:
+    """Разговор по теме без пачки и без слов (FR-EP-9).
+
+    Тема живёт один разговор: хранить её отдельно незачем, она уезжает в
+    рамку и остаётся в `episodes.frame`. Слов не отбираем, прогресс не
+    трогаем — это разговорная практика сама по себе.
+    """
+    if message.from_user is None:
+        return
+
+    # Тема — всё после слова команды (в группах она бывает и с хвостом
+    # `@бот` — его срезаем). `/topic` без темы не провоцирует угадывание:
+    # неизвестно, о чём болтать, — переспрашиваем.
+    head, _, rest = (message.text or "").partition(" ")
+    topic = rest.strip() if head.split("@")[0] == "/topic" else ""
+    if not topic:
+        await message.answer(texts.TOPIC_NEED)
+        return
+
+    user = await _current_user(session, message.from_user.id)
+    now = dt.datetime.now(dt.UTC)
+    await _sweep(session, user_id=user.id, now=now)
+
+    if await episodes_db.get_open(session, user_id=user.id) is not None:
+        await message.answer(texts.EPISODE_ALREADY_OPEN)
+        return
+
+    try:
+        async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
+            started = await dialog.start_topic(session, llm, user=user, topic=topic, now=now)
+    except LlmError as error:
+        log.warning("R3: эпизод по теме %r для %s не начался (%s)", topic, user.id, error)
+        await message.answer(texts.TOPIC_FAILED)
+        return
+
+    await message.answer(
+        render.plain(started.opening),
+        reply_markup=keyboards.reply_actions(
+            episode_id=started.episode.id,
+            turn_idx=keyboards.OPENING_TURN_IDX,
+            # Подсказка строится на целевых словах, а их тут нет (FR-EP-9).
+            hint=False,
+        ),
+    )
+
+
 # --- ход ----------------------------------------------------------------------
 
 
@@ -155,17 +202,24 @@ async def _run_turn(
     if not replied.closed:
         await message.answer(
             render.plain(replied.reply_text),
-            reply_markup=keyboards.reply_actions(episode_id=episode.id, turn_idx=replied.turn_idx),
+            reply_markup=keyboards.reply_actions(
+                episode_id=episode.id, turn_idx=replied.turn_idx, hint=bool(episode.target_word_ids)
+            ),
         )
         return
 
     # Прощание и итог — разными сообщениями: первое говорит Ник, второе
     # показывает бот, и смешивать их в одном пузыре значит смазать оба (§6).
     await message.answer(render.plain(replied.reply_text))
-    await message.answer(
-        await _outcomes_block(session, episode=episode, outcomes=replied.outcomes),
-        reply_markup=keyboards.after_episode(episode.id),
-    )
+    # Итог «Как прошло» — про целевые слова. В разговоре по теме (FR-EP-9) их
+    # нет: блок вышел бы пустым, поэтому прощание сразу с кнопкой разбора.
+    if episode.target_word_ids:
+        await message.answer(
+            await _outcomes_block(session, episode=episode, outcomes=replied.outcomes),
+            reply_markup=keyboards.after_episode(episode.id),
+        )
+    else:
+        await message.answer(texts.TOPIC_CLOSED, reply_markup=keyboards.after_episode(episode.id))
     log.info("эпизод %s закрыт: слов %s", episode.id, len(replied.outcomes))
 
 
@@ -263,10 +317,15 @@ async def handle_end(message: Message, session: AsyncSession) -> None:
 
     outcomes = await dialog.close_by_request(session, episode=episode, user_id=user.id, now=now)
     await message.answer(texts.EPISODE_ENDED)
-    await message.answer(
-        await _outcomes_block(session, episode=episode, outcomes=outcomes),
-        reply_markup=keyboards.after_episode(episode.id),
-    )
+    if episode.target_word_ids:
+        await message.answer(
+            await _outcomes_block(session, episode=episode, outcomes=outcomes),
+            reply_markup=keyboards.after_episode(episode.id),
+        )
+    else:
+        # Тема (FR-EP-9): слов, по которым был бы итог, нет — пустой блок
+        # «Как прошло» только пугает. Прощание уже есть, даём кнопку разбора.
+        await message.answer(texts.TOPIC_CLOSED, reply_markup=keyboards.after_episode(episode.id))
 
 
 async def _episode_for_analysis(

@@ -200,6 +200,37 @@ def test_frame_json_keeps_opening_out() -> None:
     assert "opening" not in frame.as_frame_json()
 
 
+# --- R3: тема (FR-EP-9) -------------------------------------------------------
+
+
+async def test_a_topic_request_asks_for_a_topic_not_for_words(persona: Any) -> None:
+    """Тема уезжает в промпт словами, а не пустым списком слов."""
+    client = ScriptedClient(
+        json.dumps(
+            {"episodes": [{"index": 0, "scene": "кухня", "opening": "Καλημέρα!"}]},
+            ensure_ascii=False,
+        )
+    )
+    result = await make_frames(
+        client,
+        persona=persona,
+        level=Level.A1,
+        profile=Profile(),
+        requests=[EpisodeRequest(intent=EpisodeIntent.TOPIC, topic="готовим ужин")],
+    )
+    assert result.frames[0].scene == "кухня"
+
+    prompt = "\n".join(message.text or "" for message in client.asked[0])
+    assert "Тема разговора: готовим ужин" in prompt
+    assert "Темы, на которые нужны разговоры" in prompt, "заголовок честный: слов нет"
+    assert "Слова, вокруг которых" not in prompt
+    assert "тип T" in prompt
+
+
+def test_frames_task_explains_the_topic_intent() -> None:
+    assert "T — разговор по теме" in FRAMES_TASK
+
+
 # --- R4: ход ------------------------------------------------------------------
 
 
@@ -207,6 +238,11 @@ def test_turn_task_demands_recast_without_grammar_lecture() -> None:
     assert "екаст" in TURN_TASK
     assert "Не объясняй грамматику" in TURN_TASK
     assert "двух исправлений" in TURN_TASK, "FR-CHK-5"
+
+
+def test_turn_task_tells_the_model_that_topic_talks_have_no_words() -> None:
+    """Без явной оговорки модель ищет целевые слова в пустом списке."""
+    assert "разговор без целевых слов" in TURN_TASK
 
 
 def test_history_reads_as_a_conversation() -> None:

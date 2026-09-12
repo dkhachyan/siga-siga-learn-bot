@@ -68,6 +68,19 @@ def _values(enum: type[StrEnum]) -> str:
     return ", ".join(f"'{member.value}'" for member in enum)
 
 
+#: SQL двух ограничений `episodes` именованными константами: миграция 0010
+#: меняет их текст, и второй копии в ней быть не должно — расхождение здесь
+#: и там оставило бы `alembic check` с редрафтом базы навсегда.
+INTENT_KNOWN_SQL = f"intent IN ({_values(EpisodeIntent)})"
+
+#: Пустой массив легален с 0010 (разговор по теме живёт без слов, FR-EP-9):
+#: `array_length` от него возвращает `NULL`, что и есть разрешение. Слова
+#: из обычных эпизодов по-прежнему держатся в границах FR-EP-1.
+TARGET_WORD_IDS_SIZE_SQL = (
+    "array_length(target_word_ids, 1) IS NULL OR array_length(target_word_ids, 1) BETWEEN 1 AND 3"
+)
+
+
 class User(Base):
     __tablename__ = "users"
     __table_args__ = (
@@ -320,14 +333,14 @@ class Episode(Base):
 
     __tablename__ = "episodes"
     __table_args__ = (
-        CheckConstraint(f"intent IN ({_values(EpisodeIntent)})", name="intent_known"),
+        CheckConstraint(INTENT_KNOWN_SQL, name="intent_known"),
         CheckConstraint(f"status IN ({_values(EpisodeStatus)})", name="episode_status_known"),
         CheckConstraint(
             f"turns_count BETWEEN 0 AND {MAX_TURNS}",
             name="turns_count_range",
         ),
         CheckConstraint(
-            "array_length(target_word_ids, 1) BETWEEN 1 AND 3",
+            TARGET_WORD_IDS_SIZE_SQL,
             name="target_word_ids_size",
         ),
         # Одновременно открыт не более одного эпизода (FR-SCH-5), и проверка

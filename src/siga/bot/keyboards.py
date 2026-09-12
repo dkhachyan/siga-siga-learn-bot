@@ -148,7 +148,7 @@ def confirm_forget_all() -> InlineKeyboardMarkup:
 
 
 def reply_actions(
-    *, episode_id: int | None = None, turn_idx: int | None = None
+    *, episode_id: int | None = None, turn_idx: int | None = None, hint: bool = True
 ) -> InlineKeyboardMarkup:
     """Кнопки под репликой — минимум (§6).
 
@@ -160,14 +160,19 @@ def reply_actions(
     `💡` и `🇷🇺` появляются только когда сказано, к какой реплике они относятся.
     Без пары адрес неизвестен — так вызывают из-под сообщений самого бота,
     которые и переводить незачем, и подсказывать к ним нечего.
+
+    Подсказка строится вокруг целевых слов эпизода, поэтому в разговоре по
+    теме (FR-EP-9) её нет: слов нет — и вариантов «что ответить» из слов не
+    выйдет. `hint=False` ставит только тот, кто открывает эпизод без слов.
     """
     builder = InlineKeyboardBuilder()
     builder.button(text="🔍 Разбор", callback_data=EpisodeAction(action="analysis"))
     if episode_id is not None and turn_idx is not None:
-        builder.button(
-            text="💡 Что ответить",
-            callback_data=HintAction(episode_id=episode_id, turn_idx=turn_idx),
-        )
+        if hint:
+            builder.button(
+                text="💡 Что ответить",
+                callback_data=HintAction(episode_id=episode_id, turn_idx=turn_idx),
+            )
         builder.button(
             text="🇷🇺 Перевод",
             callback_data=TranslateAction(episode_id=episode_id, turn_idx=turn_idx),

@@ -65,12 +65,16 @@ def should_close(
     модель считает, что разговор в разгаре. Лимит ходов тоже наш, а не её:
     модель, увлёкшись, готова беседовать бесконечно, а эпизод — это две-четыре
     реплики, иначе он перестаёт быть коротким.
+
+    Разговор по теме (FR-EP-9) живёт без целевых слов, а «все слова оценены»
+    на пустом списке — это пустая конъюнкция, то есть истина. Без этой
+    оговорки тематический эпизод закрывался бы после первого же хода.
     """
     if user_asked:
         return True
     if turns_done >= MAX_TURNS:
         return True
-    if all_targets_assessed(target_word_ids, assessed):
+    if target_word_ids and all_targets_assessed(target_word_ids, assessed):
         return True
     return model_wants_close
 

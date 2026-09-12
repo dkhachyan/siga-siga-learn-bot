@@ -94,6 +94,12 @@ class EpisodeIntent(StrEnum):
     D5 = "D5"
     """Возврат к слову из архива."""
 
+    TOPIC = "T"
+    """Свободный разговор по теме (FR-EP-9): целевых слов нет вообще.
+
+    Значение из одной буквы не случайно: `episodes.intent` — `String(2)`.
+    """
+
 
 class EpisodeStatus(StrEnum):
     """Жизненный цикл эпизода."""

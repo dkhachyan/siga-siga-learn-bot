@@ -57,6 +57,10 @@ TASK = """\
 ученику шанс переспросить или повторить.
 - D2 — слово ученик уже видел. Задай вопрос, на который без этого слова не \
 ответить, и не подсказывай его.
+- T — разговор по теме вместо слов (FR-EP-9): ученик сам попросил поболтать, \
+и целевых слов нет. Придумай сцену на его тему и заведи разговор, как в \
+жизни, подстраиваясь под уровень ученика. Целевых слов у такого разговора \
+нет и не будет — просто болтаете.
 
 Слово «JSON» здесь не случайно: ответ должен быть JSON-объектом, без markdown \
 и без пояснений."""
@@ -93,16 +97,27 @@ class FramesResponse(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class EpisodeRequest:
-    """Одна будущая рамка: слова и тип разговора, который мы для них выбрали."""
+    """Одна будущая рамка: слова и тип разговора, который мы для них выбрали.
+
+    У запроса типа `T` (FR-EP-9) слов нет — вместо них тема в `topic`.
+    """
 
     intent: EpisodeIntent
-    words: Sequence[WordBrief]
+    words: Sequence[WordBrief] = ()
+    topic: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class FramesResult:
     frames: list[Frame]
     usage: Usage
+
+
+def _group_line(index: int, request: EpisodeRequest) -> str:
+    """Одна группа запроса: список слов или, для темы, сама тема (FR-EP-9)."""
+    if request.intent is EpisodeIntent.TOPIC:
+        return f"Группа {index} — тип {request.intent.value}:\nТема разговора: {request.topic}"
+    return f"Группа {index} — тип {request.intent.value}:\n{words_block(request.words)}"
 
 
 def build_messages(
@@ -113,9 +128,13 @@ def build_messages(
     requests: Sequence[EpisodeRequest],
 ) -> list[Message]:
     """Промпт вызова: статика в `system`, всё изменчивое — в `user` (§8.4)."""
-    groups = "\n\n".join(
-        f"Группа {index} — тип {request.intent.value}:\n{words_block(request.words)}"
-        for index, request in enumerate(requests)
+    groups = "\n\n".join(_group_line(index, request) for index, request in enumerate(requests))
+    # Заголовок честный: у тематического запроса слов нет, и «слова, вокруг
+    # которых» сбило бы модель.
+    header = (
+        "Темы, на которые нужны разговоры"
+        if all(r.intent is EpisodeIntent.TOPIC for r in requests)
+        else "Слова, вокруг которых нужны разговоры"
     )
     return [
         Message("system", system_prompt(persona, TASK, SCHEMA)),
@@ -123,7 +142,7 @@ def build_messages(
             "user",
             f"{level_note(level)}\n\n"
             f"Что ты помнишь о человеке:\n{profile_block(profile)}\n\n"
-            f"Слова, вокруг которых нужны разговоры:\n{groups}",
+            f"{header}:\n{groups}",
         ),
     ]
 
