@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 
 import pytest
 
+from siga.bot import texts
 from siga.bot.render import (
     MESSAGE_LIMIT,
     Card,
@@ -249,3 +251,23 @@ def test_word_card_stays_silent_about_grammar_it_has_no_words_for() -> None:
 
     assert "other" not in text
     assert "ещё не собрал" not in text
+
+
+# --- HTML: тексты обязаны парситься настоящим Telegram -------------------------
+
+
+#: Теги, которые Telegram понимает в режиме HTML. Всё, что снаружи этого
+#: списка, API отклонит («can't parse entities»), и человек увидит молчание:
+#: подделка под тег — `/topic <тема>` — тонет ровно так.
+ALLOWED_TAGS = re.compile(
+    r"</?(?:b|i|u|s|code|pre|blockquote|tg-spoiler)\s*/?>|<a href=\"[^\"]*\">|</a>"
+)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [name for name in dir(texts) if name.isupper() and isinstance(getattr(texts, name), str)],
+)
+def test_every_text_parses_as_html(name: str) -> None:
+    leftover = ALLOWED_TAGS.sub("", getattr(texts, name))
+    assert "<" not in leftover, f"{name} содержит сырой тег — Telegram отклонит сообщение"
