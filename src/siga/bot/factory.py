@@ -20,6 +20,7 @@ BOT_COMMANDS = [
     BotCommand(command="topic", description="Поболтать на тему без пачки слов"),
     BotCommand(command="end", description="Закончить разговор"),
     BotCommand(command="add", description="Загрузить пачку слов"),
+    BotCommand(command="lesson", description="Пачка из уроков учебника"),
     BotCommand(command="pack", description="Показать текущую пачку"),
     BotCommand(command="memory", description="Что Ник обо мне помнит"),
     BotCommand(command="settings", description="Расписание: когда и как часто"),

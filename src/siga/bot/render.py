@@ -94,6 +94,13 @@ def pack_title(when: dt.date) -> str:
     return f"Пачка от {when.day} {MONTHS_RU[when.month - 1]}"
 
 
+def lesson_pack_title(first: int, last: int) -> str:
+    """Название пачки из уроков учебника: «Урок 3», «Уроки 1–4»."""
+    if first == last:
+        return f"Урок {first}"
+    return f"Уроки {first}–{last}"
+
+
 @dataclass(frozen=True, slots=True)
 class WordLine:
     """То, что нужно строке списка, — без модели SQLAlchemy."""

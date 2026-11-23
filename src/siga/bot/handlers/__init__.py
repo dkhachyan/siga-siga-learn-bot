@@ -2,7 +2,16 @@
 
 from aiogram import Router
 
-from siga.bot.handlers import cards, common, episodes, imports, memory, settings, start
+from siga.bot.handlers import (
+    cards,
+    common,
+    episodes,
+    imports,
+    lessons,
+    memory,
+    settings,
+    start,
+)
 
 
 def build_router() -> Router:
@@ -14,6 +23,9 @@ def build_router() -> Router:
     """
     router = Router(name="root")
     router.include_router(start.router)
+    # `lessons` раньше `imports`: там в состоянии «жду список» любой текст —
+    # список, и `/lesson 3` до своего хендлера бы не дошёл.
+    router.include_router(lessons.router)
     router.include_router(imports.router)
     router.include_router(cards.router)
     router.include_router(memory.router)

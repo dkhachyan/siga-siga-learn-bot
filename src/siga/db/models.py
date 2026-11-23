@@ -80,6 +80,11 @@ TARGET_WORD_IDS_SIZE_SQL = (
     "array_length(target_word_ids, 1) IS NULL OR array_length(target_word_ids, 1) BETWEEN 1 AND 3"
 )
 
+#: Откуда слово: `words.source` и `imports.source_type`. Константами по той же
+#: причине, что выше, — миграция 0011 добавляет в них `glossary` (FR-IMP-12).
+WORD_SOURCE_KNOWN_SQL = f"source IN ({_values(WordSource)})"
+IMPORT_SOURCE_KNOWN_SQL = f"source_type IN ({_values(WordSource)})"
+
 
 class User(Base):
     __tablename__ = "users"
@@ -152,9 +157,7 @@ class Import(Base):
     """
 
     __tablename__ = "imports"
-    __table_args__ = (
-        CheckConstraint(f"source_type IN ({_values(WordSource)})", name="source_type_known"),
-    )
+    __table_args__ = (CheckConstraint(IMPORT_SOURCE_KNOWN_SQL, name="source_type_known"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
@@ -244,7 +247,7 @@ class Word(Base):
     __table_args__ = (
         CheckConstraint(f"pos IS NULL OR pos IN ({_values(PartOfSpeech)})", name="pos_known"),
         CheckConstraint(f"gender IS NULL OR gender IN ({_values(Gender)})", name="gender_known"),
-        CheckConstraint(f"source IN ({_values(WordSource)})", name="source_known"),
+        CheckConstraint(WORD_SOURCE_KNOWN_SQL, name="source_known"),
         # Дедупликация против архива (FR-IMP-5): ищем по владельцу и ключу леммы.
         Index("ix_words_user_id_lemma", "user_id", "lemma"),
     )

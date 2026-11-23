@@ -33,7 +33,7 @@ from siga.core.wordlist import (
 from siga.db import packs, users
 from siga.db.models import DEFAULT_PERIOD_DAYS, Pack, User
 from siga.llm.base import LlmClient, LlmError
-from siga.llm.enrich import enrich
+from siga.llm.enrich import ENRICH_PARALLEL, enrich
 
 log = logging.getLogger(__name__)
 
@@ -65,8 +65,11 @@ async def _current_user_id(session: AsyncSession, message_from_id: int) -> int:
     return (await _current_user(session, message_from_id)).id
 
 
-async def _show_pack(message: Message, session: AsyncSession, pack: Pack) -> None:
-    """Отправить экран подтверждения: список плюс кнопки на последнем сообщении."""
+async def show_draft(message: Message, session: AsyncSession, pack: Pack) -> None:
+    """Отправить экран подтверждения: список плюс кнопки на последнем сообщении.
+
+    Общий для импорта текстом и пачки из уроков (`handlers.lessons`).
+    """
     words = await packs.list_words(session, pack_id=pack.id)
     if not words:
         await message.answer(texts.PACK_EMPTY)
@@ -195,7 +198,7 @@ async def handle_pack(message: Message, session: AsyncSession, state: FSMContext
     draft = await packs.get_draft(session, user_id=user_id)
     if draft is not None:
         await state.set_state(ImportFlow.confirming)
-        await _show_pack(message, session, draft)
+        await show_draft(message, session, draft)
         return
 
     active = await packs.get_active(session, user_id=user_id)
@@ -249,7 +252,7 @@ async def handle_list(message: Message, session: AsyncSession, state: FSMContext
         await message.answer(texts.ADD_TOO_FEW.format(count=len(result.words)))
 
     await state.set_state(ImportFlow.confirming)
-    await _show_pack(message, session, pack)
+    await show_draft(message, session, pack)
 
 
 def _parse_report(duplicates: Sequence[ParsedWord], rejected: Sequence[RejectedLine]) -> str:
@@ -290,7 +293,7 @@ async def handle_back(callback: CallbackQuery, session: AsyncSession, state: FSM
     pack, message, _ = found
     await state.set_state(ImportFlow.confirming)
     await callback.answer()
-    await _show_pack(message, session, pack)
+    await show_draft(message, session, pack)
 
 
 @router.callback_query(keyboards.PackAction.filter(F.action == "delete"))
@@ -321,6 +324,24 @@ async def handle_edit_pick(callback: CallbackQuery, session: AsyncSession) -> No
     )
 
 
+@router.callback_query(keyboards.NumbersPage.filter(F.action.in_({"delete", "edit"})))
+async def handle_numbers_page(
+    callback: CallbackQuery, callback_data: keyboards.NumbersPage, session: AsyncSession
+) -> None:
+    """Листание номеров на черновике: в большой пачке они идут страницами."""
+    found = await _draft_or_complain(callback, session)
+    if found is None:
+        return
+    pack, message, _ = found
+    words = await packs.list_words(session, pack_id=pack.id)
+    await callback.answer()
+    await message.edit_reply_markup(
+        reply_markup=keyboards.word_numbers(
+            [word.id for word in words], callback_data.action, page=callback_data.page
+        )
+    )
+
+
 @router.callback_query(keyboards.WordAction.filter(F.action == "delete"))
 async def handle_delete_word(
     callback: CallbackQuery,
@@ -335,7 +356,7 @@ async def handle_delete_word(
     await packs.remove_word(session, pack_id=pack.id, word_id=callback_data.word_id)
     await state.set_state(ImportFlow.confirming)
     await callback.answer("Убрал")
-    await _show_pack(message, session, pack)
+    await show_draft(message, session, pack)
 
 
 @router.callback_query(keyboards.WordAction.filter(F.action == "edit"))
@@ -380,7 +401,7 @@ async def handle_new_translation(
         session, pack_id=pack.id, word_id=int(word_id), translation_ru=message.text.strip()
     )
     await state.set_state(ImportFlow.confirming)
-    await _show_pack(message, session, pack)
+    await show_draft(message, session, pack)
 
 
 @router.callback_query(keyboards.PackAction.filter(F.action == "add"))
@@ -424,7 +445,7 @@ async def handle_new_word(message: Message, session: AsyncSession, state: FSMCon
         return
 
     await state.set_state(ImportFlow.confirming)
-    await _show_pack(message, session, pack)
+    await show_draft(message, session, pack)
 
 
 async def _enrich_pack(
@@ -440,7 +461,12 @@ async def _enrich_pack(
     await message.answer(texts.ENRICHING)
 
     try:
-        result = await enrich(llm, lemmas=[word.lemma_accented for word in words], level=level)
+        result = await enrich(
+            llm,
+            lemmas=[word.lemma_accented for word in words],
+            level=level,
+            parallel=ENRICH_PARALLEL,
+        )
     except LlmError as error:
         log.warning("R2: обогащение пачки %s не удалось (%s)", pack.id, error)
         await message.answer(texts.ENRICH_FAILED.format(reason=error))
@@ -501,4 +527,4 @@ async def handle_confirm(
     )
 
 
-__all__ = ["ImportFlow", "router"]
+__all__ = ["ImportFlow", "router", "show_draft"]
