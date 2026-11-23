@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -23,6 +24,12 @@ log = logging.getLogger(__name__)
 #: обрезанный ответ и потерянная пачка. Двадцать помещаются с запасом, а
 #: пять вызовов вместо одного всё равно идут параллельно ночному расписанию.
 ENRICH_BATCH = 20
+
+#: Сколько партий обогащать одновременно, когда вызывающий просит параллельно.
+#: Пачка из уроков (FR-IMP-12) — до трёхсот слов, то есть пятнадцать партий,
+#: и по очереди это несколько минут ожидания после `✅`. Лимит DeepSeek — по
+#: параллельности, и четыре запроса от одного человека его не заденут.
+ENRICH_PARALLEL = 4
 
 #: Сколько примеров просим. Больше двух человек не читает (FR-IMP-7).
 MAX_EXAMPLES = 2
@@ -140,6 +147,7 @@ async def enrich(
     *,
     lemmas: Sequence[str],
     level: Level,
+    parallel: int = 1,
 ) -> EnrichResult:
     """Обогатить список лемм. Ошибка одной партии не роняет остальные.
 
@@ -147,25 +155,38 @@ async def enrich(
     Частично обогащённая пачка лучше, чем пачка целиком без грамматики: у
     слова без обогащения `enriched_at` останется пустым, и его можно будет
     догнать повторным вызовом.
+
+    `parallel` — сколько партий идёт одновременно. По умолчанию по одной:
+    так порядок вызовов предсказуем, и на нём держатся тесты со сценарием.
     """
     found: dict[str, EnrichedWord] = {}
     usage = Usage()
     failure: LlmError | None = None
+    gate = asyncio.Semaphore(max(parallel, 1))
 
-    for batch in _batches(lemmas, ENRICH_BATCH):
-        try:
-            answer, spent = await complete_json(
-                client,
-                route=Route.ENRICH,
-                messages=build_messages(batch, level),
-                schema=EnrichResponse,
-            )
-        except LlmError as error:
-            # Партия могла не пройти по своей причине: модель споткнулась на
-            # одном слове или провайдер моргнул. Остальные пробуем всё равно.
-            log.warning("R2: партия из %s слов не обогатилась (%s)", len(batch), error)
-            failure = failure or error
+    async def run(batch: Sequence[str]) -> tuple[Sequence[str], EnrichResponse, Usage] | LlmError:
+        async with gate:
+            try:
+                answer, spent = await complete_json(
+                    client,
+                    route=Route.ENRICH,
+                    messages=build_messages(batch, level),
+                    schema=EnrichResponse,
+                )
+            except LlmError as error:
+                # Партия могла не пройти по своей причине: модель споткнулась на
+                # одном слове или провайдер моргнул. Остальные пробуем всё равно.
+                log.warning("R2: партия из %s слов не обогатилась (%s)", len(batch), error)
+                return error
+            return batch, answer, spent
+
+    outcomes = await asyncio.gather(*(run(batch) for batch in _batches(lemmas, ENRICH_BATCH)))
+
+    for outcome in outcomes:
+        if isinstance(outcome, LlmError):
+            failure = failure or outcome
             continue
+        batch, answer, spent = outcome
         usage += spent
 
         wanted = {normalize_lemma(lemma) for lemma in batch}
@@ -191,6 +212,7 @@ async def enrich(
 
 __all__ = [
     "ENRICH_BATCH",
+    "ENRICH_PARALLEL",
     "MAX_EXAMPLES",
     "SYSTEM_PROMPT",
     "EnrichResponse",

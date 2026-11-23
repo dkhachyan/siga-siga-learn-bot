@@ -16,6 +16,13 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 #: Сколько кнопок-номеров в ряду на экранах правки и удаления.
 NUMBERS_PER_ROW = 5
 
+#: Сколько номеров на одной странице выбора. Telegram держит не больше сотни
+#: кнопок в клавиатуре; полсотни — десять рядов, и ещё видно, что под ними.
+NUMBERS_PER_PAGE = 50
+
+#: Сколько кнопок-уроков в ряду меню `/lesson`.
+LESSONS_PER_ROW = 6
+
 
 class PackAction(CallbackData, prefix="pack"):
     """Кнопки работы с пачкой — экрана подтверждения, замены и правки активной."""
@@ -35,6 +42,24 @@ class WordAction(CallbackData, prefix="word"):
     вечно, и payload вида `word:delete:12` должен распаковываться и через год.
     Убрать значение — значит молча обездвижить все старые кнопки."""
     word_id: int
+
+
+class NumbersPage(CallbackData, prefix="nums"):
+    """Листание страниц кнопок-номеров (`word_numbers`).
+
+    Отдельный префикс, а не поле в `WordAction`: payload старых кнопок
+    `word:…` должен распаковываться как прежде.
+    """
+
+    action: Literal["edit", "delete", "drop"]
+    page: int
+
+
+class LessonAction(CallbackData, prefix="lsn"):
+    """Кнопка урока в меню `/lesson` (FR-IMP-12): пачка из уроков `first..last`."""
+
+    first: int
+    last: int
 
 
 class CardAction(CallbackData, prefix="card"):
@@ -273,6 +298,7 @@ def word_numbers(
     action: Literal["edit", "delete", "drop"],
     *,
     back_to_list: bool = False,
+    page: int = 0,
 ) -> InlineKeyboardMarkup:
     """Кнопки-номера по числу слов в пачке плюс возврат.
 
@@ -281,11 +307,43 @@ def word_numbers(
 
     `back_to_list` — куда ведёт «Назад»: у черновика это экран подтверждения,
     у выбора в активной пачке — свежий список пачки, который рисуется заново.
+
+    Номера идут страницами по `NUMBERS_PER_PAGE`: Telegram не принимает
+    клавиатуру больше чем из сотни кнопок, а пачка из уроков (FR-IMP-12)
+    бывает и в триста слов. Страница вне диапазона прижимается к краю —
+    кнопка из старой переписки после удаления слов не должна вести в пустоту.
     """
+    pages = max(1, -(-len(word_ids) // NUMBERS_PER_PAGE))
+    page = min(max(page, 0), pages - 1)
+    start = page * NUMBERS_PER_PAGE
+    shown = word_ids[start : start + NUMBERS_PER_PAGE]
+
     builder = InlineKeyboardBuilder()
-    for index, word_id in enumerate(word_ids, start=1):
+    for index, word_id in enumerate(shown, start=start + 1):
         builder.button(text=str(index), callback_data=WordAction(action=action, word_id=word_id))
-    builder.adjust(*([NUMBERS_PER_ROW] * (len(word_ids) // NUMBERS_PER_ROW + 1)))
+    builder.adjust(*([NUMBERS_PER_ROW] * (len(shown) // NUMBERS_PER_ROW + 1)))
+
+    if pages > 1:
+        nav = []
+        if page > 0:
+            first = (page - 1) * NUMBERS_PER_PAGE + 1
+            nav.append(
+                InlineKeyboardButton(
+                    text=f"← {first}–{start}",
+                    callback_data=NumbersPage(action=action, page=page - 1).pack(),
+                )
+            )
+        if page < pages - 1:
+            first = start + NUMBERS_PER_PAGE + 1
+            last = min(first + NUMBERS_PER_PAGE - 1, len(word_ids))
+            nav.append(
+                InlineKeyboardButton(
+                    text=f"{first}–{last} →",
+                    callback_data=NumbersPage(action=action, page=page + 1).pack(),
+                )
+            )
+        builder.row(*nav)
+
     if back_to_list:
         builder.row(
             InlineKeyboardButton(text="← Назад", callback_data=CardAction(action="list").pack())
@@ -295,6 +353,11 @@ def word_numbers(
             InlineKeyboardButton(text="← Назад", callback_data=PackAction(action="back").pack())
         )
     return builder.as_markup()
+
+
+def numbers_page_of(position: int) -> int:
+    """Страница номеров, на которой стоит слово с этим порядковым номером (с нуля)."""
+    return max(position, 0) // NUMBERS_PER_PAGE
 
 
 def confirm_drop(word_id: int) -> InlineKeyboardMarkup:
@@ -563,6 +626,19 @@ def topic_menu(level: str) -> InlineKeyboardMarkup:
     for index, topic in topics_for(level):
         builder.button(text=topic, callback_data=TopicAction(action="preset", index=index))
     builder.adjust(2)
+    return builder.as_markup()
+
+
+def lesson_menu(lessons: Sequence[int]) -> InlineKeyboardMarkup:
+    """Кнопки-уроки под `/lesson` без номера: нажатие — пачка из одного урока.
+
+    Диапазон кнопками не набрать — его пишут командой (`/lesson 1-4`), об
+    этом говорит текст над меню.
+    """
+    builder = InlineKeyboardBuilder()
+    for lesson in lessons:
+        builder.button(text=str(lesson), callback_data=LessonAction(first=lesson, last=lesson))
+    builder.adjust(LESSONS_PER_ROW)
     return builder.as_markup()
 
 

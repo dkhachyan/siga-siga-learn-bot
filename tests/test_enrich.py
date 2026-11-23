@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -16,6 +17,7 @@ from siga.core.enums import Gender, Level, PartOfSpeech
 from siga.llm.base import LlmBadOutput, LlmUnavailable
 from siga.llm.enrich import (
     ENRICH_BATCH,
+    ENRICH_PARALLEL,
     MAX_EXAMPLES,
     SYSTEM_PROMPT,
     build_messages,
@@ -217,3 +219,50 @@ async def test_enrich_raises_bad_output_when_every_batch_is_junk() -> None:
     client = ScriptedClient("мусор", "снова мусор")
     with pytest.raises(LlmBadOutput):
         await enrich(client, lemmas=["το νερό"], level=Level.A1)
+
+
+class _EchoClient:
+    """Отвечает на любую партию её же словами и считает одновременные вызовы."""
+
+    def __init__(self) -> None:
+        self.in_flight = 0
+        self.max_in_flight = 0
+        self.calls = 0
+
+    async def complete(self, *, route: Any, messages: Any, **_: Any) -> Any:
+        from siga.llm.base import Completion
+        from tests.fake_llm import ANSWER_USAGE
+
+        self.calls += 1
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        await asyncio.sleep(0.01)
+        self.in_flight -= 1
+        lemmas = [line[2:] for line in messages[-1].text.splitlines() if line.startswith("- ")]
+        text = answer(*(word(lemma, article=None, gender=None) for lemma in lemmas))
+        return Completion(text, "test-model", ANSWER_USAGE)
+
+    async def close(self) -> None:
+        return None
+
+
+async def test_enrich_runs_batches_in_parallel_when_asked() -> None:
+    """Пачка из уроков — до трёхсот слов: по очереди это минуты ожидания."""
+    lemmas = [f"λέξη{n}" for n in range(ENRICH_BATCH * 5)]
+    client = _EchoClient()
+
+    result = await enrich(client, lemmas=lemmas, level=Level.A1, parallel=ENRICH_PARALLEL)
+
+    assert client.calls == 5
+    assert 1 < client.max_in_flight <= ENRICH_PARALLEL
+    assert result.missing == ()
+    assert result.enriched_count == len(lemmas)
+
+
+async def test_enrich_goes_one_batch_at_a_time_by_default() -> None:
+    lemmas = [f"λέξη{n}" for n in range(ENRICH_BATCH * 3)]
+    client = _EchoClient()
+
+    await enrich(client, lemmas=lemmas, level=Level.A1)
+
+    assert client.max_in_flight == 1

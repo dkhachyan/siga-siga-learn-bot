@@ -186,6 +186,24 @@ async def handle_drop_pick(callback: CallbackQuery, session: AsyncSession) -> No
     )
 
 
+@router.callback_query(keyboards.NumbersPage.filter(F.action == "drop"))
+async def handle_drop_page(
+    callback: CallbackQuery, callback_data: keyboards.NumbersPage, session: AsyncSession
+) -> None:
+    """Листание номеров активной пачки: в большой пачке они идут страницами."""
+    found = await _active_or_complain(callback, session)
+    if found is None:
+        return
+    message, pack, _ = found
+    words = await packs.list_words(session, pack_id=pack.id)
+    await callback.answer()
+    await message.edit_reply_markup(
+        reply_markup=keyboards.word_numbers(
+            [word.id for word in words], "drop", back_to_list=True, page=callback_data.page
+        )
+    )
+
+
 @router.callback_query(keyboards.WordAction.filter(F.action == "drop"))
 async def handle_drop_pick_word(
     callback: CallbackQuery, callback_data: keyboards.WordAction, session: AsyncSession
@@ -247,10 +265,15 @@ async def handle_drop_no(
         return
     message, pack, _ = found
     words = await packs.list_words(session, pack_id=pack.id)
+    ids = [word.id for word in words]
+    # Возвращаем ту страницу номеров, с которой слово выбирали.
+    position = ids.index(callback_data.word_id) if callback_data.word_id in ids else 0
     await callback.answer()
     await message.edit_text(
         texts.DELETE_PICK,
-        reply_markup=keyboards.word_numbers([word.id for word in words], "drop", back_to_list=True),
+        reply_markup=keyboards.word_numbers(
+            ids, "drop", back_to_list=True, page=keyboards.numbers_page_of(position)
+        ),
     )
 
 

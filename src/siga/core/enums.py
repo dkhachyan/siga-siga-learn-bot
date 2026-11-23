@@ -192,3 +192,6 @@ class WordSource(StrEnum):
 
     MANUAL = "manual"
     """Добавлено по одному на экране подтверждения."""
+
+    GLOSSARY = "glossary"
+    """Взято из встроенного словаря уроков учебника (FR-IMP-12)."""
